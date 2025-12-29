@@ -17,6 +17,7 @@ import re
 import gzip
 import logging
 import argparse
+import fnmatch
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Union
@@ -397,6 +398,26 @@ class DatabaseDumper:
             'errors': []
         }
 
+    def _is_table_excluded(self, table_name: str, exclude_patterns: List[str]) -> bool:
+        """
+        Check if a table should be excluded based on patterns.
+
+        Supports:
+        - Exact matches: 'users_backup'
+        - Wildcard patterns: '*_old', 'tmp_*', '*_backup_*'
+
+        Uses fnmatch for Unix shell-style wildcards:
+        - * matches everything
+        - ? matches any single character
+        - [seq] matches any character in seq
+        - [!seq] matches any character not in seq
+        """
+        for pattern in exclude_patterns:
+            if fnmatch.fnmatch(table_name, pattern):
+                logging.debug(f"Table '{table_name}' excluded by pattern '{pattern}'")
+                return True
+        return False
+
     def run(self) -> Dict:
         """Run the dump process for all configured databases."""
         # Setup output directory
@@ -454,12 +475,33 @@ class DatabaseDumper:
 
                 # Get tables to dump
                 tables_config = db_config.get('tables', '*')
+                exclude_patterns = db_config.get('exclude_tables', [])
+
                 if tables_config == '*':
                     # Dump all tables
                     table_names = conn.get_tables()
+                    # Apply exclusion patterns
+                    if exclude_patterns:
+                        original_count = len(table_names)
+                        table_names = [
+                            t for t in table_names
+                            if not self._is_table_excluded(t, exclude_patterns)
+                        ]
+                        excluded_count = original_count - len(table_names)
+                        if excluded_count > 0:
+                            logging.info(f"Excluded {excluded_count} table(s) matching exclusion patterns")
                     tables_to_dump = [{'name': t} for t in table_names]
                 else:
                     tables_to_dump = tables_config
+                    # Apply exclusion patterns to explicitly listed tables as well
+                    if exclude_patterns:
+                        tables_to_dump = [
+                            t for t in tables_to_dump
+                            if not self._is_table_excluded(
+                                t['name'] if isinstance(t, dict) else t,
+                                exclude_patterns
+                            )
+                        ]
 
                 logging.info(f"Dumping {len(tables_to_dump)} table(s) from '{db_name}'")
 

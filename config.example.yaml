@@ -36,6 +36,14 @@ databases:
   - name: "ecommerce_db"
     instance: "primary"
     tables: "*"  # "*" means all tables
+    # Exclude tables matching these patterns (supports wildcards)
+    exclude_tables:
+      - "*_backup"      # Exclude tables ending with _backup
+      - "*_old"         # Exclude tables ending with _old
+      - "tmp_*"         # Exclude tables starting with tmp_
+      - "temp_*"        # Exclude tables starting with temp_
+      - "_*"            # Exclude tables starting with underscore
+      - "test_data"     # Exclude exact table name
 
   # Example: Dump specific tables with custom settings
   - name: "analytics_db"

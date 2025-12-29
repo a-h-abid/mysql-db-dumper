@@ -65,6 +65,29 @@ databases:
         where_clause: "status = 'active'"
 ```
 
+### Excluding Tables
+
+You can exclude tables using exact names or wildcard patterns:
+
+```yaml
+databases:
+  - name: "my_database"
+    instance: "primary"
+    tables: "*"
+    exclude_tables:
+      - "users_backup"    # Exact match
+      - "*_old"           # Tables ending with _old
+      - "tmp_*"           # Tables starting with tmp_
+      - "*_backup_*"      # Tables containing _backup_
+      - "temp_??"         # temp_ followed by exactly 2 characters
+```
+
+**Supported wildcards:**
+- `*` - matches any number of characters
+- `?` - matches any single character
+- `[seq]` - matches any character in seq
+- `[!seq]` - matches any character not in seq
+
 ### Configuration Options
 
 | Option | Level | Description |
@@ -73,6 +96,7 @@ databases:
 | `order_by` | default/database/table | Column to sort by |
 | `order_direction` | default/database/table | ASC or DESC |
 | `where_clause` | default/database/table | SQL WHERE condition |
+| `exclude_tables` | database | List of table patterns to exclude (supports wildcards) |
 
 Settings cascade: `defaults` → `database` → `table` (most specific wins)
 
