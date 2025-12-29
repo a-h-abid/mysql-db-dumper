@@ -469,8 +469,17 @@ class DatabaseDumper:
                     return True
         return False
 
-    def run(self) -> Dict:
-        """Run the dump process for all configured databases."""
+    def run(
+        self,
+        database_filter: Optional[str] = None,
+        instance_filter: Optional[str] = None
+    ) -> Dict:
+        """Run the dump process for all configured databases.
+
+        Args:
+            database_filter: If specified, only dump this database name
+            instance_filter: If specified, only dump databases from this instance
+        """
         # Setup output directory
         output_dir = Path(self.output_settings.get('directory', './dumps'))
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -478,6 +487,18 @@ class DatabaseDumper:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
         databases = self.config.get_databases()
+
+        # Apply filters
+        if database_filter:
+            databases = [db for db in databases if db['name'] == database_filter]
+            if not databases:
+                logging.warning(f"No database named '{database_filter}' found in configuration")
+
+        if instance_filter:
+            databases = [db for db in databases if db.get('instance', 'primary') == instance_filter]
+            if not databases:
+                logging.warning(f"No databases found for instance '{instance_filter}'")
+
         logging.info(f"Starting dump of {len(databases)} database(s)")
 
         for db_config in databases:
@@ -669,6 +690,14 @@ def main():
         action='store_true',
         help='Show what would be dumped without actually dumping'
     )
+    parser.add_argument(
+        '-d', '--database',
+        help='Dump only the specified database (must be defined in config)'
+    )
+    parser.add_argument(
+        '-i', '--instance',
+        help='Dump only databases from the specified instance'
+    )
 
     args = parser.parse_args()
 
@@ -691,7 +720,15 @@ def main():
     # Dry run mode
     if args.dry_run:
         logging.info("DRY RUN MODE - No data will be dumped")
-        for db in config.get_databases():
+        databases = config.get_databases()
+
+        # Apply filters for dry run as well
+        if args.database:
+            databases = [db for db in databases if db['name'] == args.database]
+        if args.instance:
+            databases = [db for db in databases if db.get('instance', 'primary') == args.instance]
+
+        for db in databases:
             logging.info(f"Would dump database: {db['name']} from instance: {db.get('instance', 'primary')}")
             tables = db.get('tables', '*')
             if tables == '*':
@@ -707,7 +744,10 @@ def main():
     # Run dump
     try:
         dumper = DatabaseDumper(config)
-        stats = dumper.run()
+        stats = dumper.run(
+            database_filter=args.database,
+            instance_filter=args.instance
+        )
 
         # Print summary
         logging.info("=" * 50)

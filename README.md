@@ -145,6 +145,44 @@ python src/db_dumper.py --dry-run
 python src/db_dumper.py -v
 ```
 
+### Dump Specific Database
+
+Dump only a specific database from your configuration:
+
+```bash
+python src/db_dumper.py --database my_database
+# or
+python src/db_dumper.py -d my_database
+```
+
+### Dump from Specific Instance
+
+Dump only databases configured for a specific instance:
+
+```bash
+python src/db_dumper.py --instance primary
+# or
+python src/db_dumper.py -i secondary
+```
+
+### Combine Filters
+
+You can combine filters to dump a specific database from a specific instance:
+
+```bash
+python src/db_dumper.py --database users --instance us_east
+```
+
+### Command Line Options
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--config` | `-c` | Path to configuration file (default: config.yaml) |
+| `--verbose` | `-v` | Enable verbose/debug output |
+| `--dry-run` | | Preview what would be dumped without dumping |
+| `--database` | `-d` | Dump only the specified database |
+| `--instance` | `-i` | Dump only databases from the specified instance |
+
 ## Output Structure
 
 ```
