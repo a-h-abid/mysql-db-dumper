@@ -98,6 +98,25 @@ databases:
 | `where_clause` | default/database/table | SQL WHERE condition |
 | `exclude_tables` | database | List of table patterns to exclude (supports wildcards) |
 
+### Logging Configuration
+
+You can configure logging behavior in the `logging` section of `config.yaml`.
+
+```yaml
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "./dumps/dump.log"
+```
+
+**Docker / Stdout Only:**
+To write logs only to stdout (useful for Docker containers), comment out or remove the `file` option:
+
+```yaml
+logging:
+  level: "INFO"
+  # file: "./dumps/dump.log"  <-- Comment out to disable file logging
+```
+
 Settings cascade: `defaults` → `database` → `table` (most specific wins)
 
 ## Usage
