@@ -9,13 +9,11 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-      # BuildKit-specific build options
-      args:
-        BUILDKIT_INLINE_CACHE: 1
+      # BuildKit cache using registry backend
       cache_from:
-        - type=local,src=/tmp/cache
+        - type=registry,ref=ghcr.io/a-h-abid/mysql-db-dumper:buildcache
       cache_to:
-        - type=local,dest=/tmp/cache
+        - type=registry,ref=ghcr.io/a-h-abid/mysql-db-dumper:buildcache,mode=max
     image: mysql-db-dumper:latest
     environment:
       - TZ=${TZ:-UTC}
