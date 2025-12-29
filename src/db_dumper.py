@@ -129,7 +129,7 @@ class DatabaseConnection:
 
     def get_cursor(self, buffered: bool = False):
         """Get a cursor for streaming large results.
-        
+
         Args:
             buffered: If False (default), uses server-side cursor for memory-efficient
                      streaming of large result sets. If True, uses buffered cursor.
@@ -186,7 +186,7 @@ class TableDumper:
         self.connection = connection
         self.output_settings = output_settings
         self.batch_size = output_settings.get('batch_size', self.DEFAULT_BATCH_SIZE)
-        
+
         # Pre-build type formatters for faster dispatch
         self._type_formatters = {
             type(None): lambda v: 'NULL',
@@ -361,14 +361,14 @@ class TableDumper:
 
     def _format_sql_value(self, value: Any) -> str:
         """Format a value for SQL INSERT statement.
-        
+
         Uses type-based dispatch for common types to avoid isinstance() overhead.
         """
         # Fast path: direct type lookup
         formatter = self._type_formatters.get(type(value))
         if formatter:
             return formatter(value)
-        
+
         # Slow path: string conversion with escaping
         escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
         escaped = escaped.replace("\n", "\\n").replace("\r", "\\r")
@@ -395,15 +395,15 @@ class TableDumper:
 
         rows_dumped = 0
         batch = []
-        
+
         for row in cursor:
             batch.append(row)
             rows_dumped += 1
-            
+
             if len(batch) >= self.CSV_BATCH_SIZE:
                 writer.writerows(batch)
                 batch = []
-        
+
         # Write remaining rows
         if batch:
             writer.writerows(batch)
@@ -429,7 +429,7 @@ class DatabaseDumper:
     def _compile_exclusion_patterns(self, exclude_patterns: List[str]) -> List[re.Pattern]:
         """
         Pre-compile exclusion patterns to regex for faster matching.
-        
+
         Converts fnmatch patterns to compiled regex patterns.
         """
         compiled = []
@@ -527,7 +527,7 @@ class DatabaseDumper:
                 # Get tables to dump
                 tables_config = db_config.get('tables', '*')
                 exclude_patterns = db_config.get('exclude_tables', [])
-                
+
                 # Pre-compile exclusion patterns for faster matching
                 compiled_patterns = self._compile_exclusion_patterns(exclude_patterns) if exclude_patterns else None
 
