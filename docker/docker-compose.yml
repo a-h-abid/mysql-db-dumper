@@ -12,6 +12,10 @@ services:
       # BuildKit-specific build options
       args:
         BUILDKIT_INLINE_CACHE: 1
+      cache_from:
+        - type=local,src=/tmp/cache
+      cache_to:
+        - type=local,dest=/tmp/cache
     image: mysql-db-dumper:latest
     environment:
       - TZ=${TZ:-UTC}
