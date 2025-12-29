@@ -161,6 +161,39 @@ databases:
         order_direction: "DESC"
 ```
 
+### Dump Table Structure Only (No Data)
+
+To export only the table schema without any data, set `row_limit: 0`:
+
+```yaml
+# For all tables in a database
+databases:
+  - name: "my_database"
+    instance: "primary"
+    row_limit: 0
+    tables: "*"
+```
+
+```yaml
+# For specific tables
+databases:
+  - name: "my_database"
+    instance: "primary"
+    tables:
+      - name: "users"
+        row_limit: 0
+      - name: "orders"
+        row_limit: 0
+```
+
+```yaml
+# As a global default for all databases
+defaults:
+  row_limit: 0
+```
+
+This will generate SQL files containing only `DROP TABLE` and `CREATE TABLE` statements without any `INSERT` statements.
+
 ### Dump to CSV with Compression
 
 ```yaml
