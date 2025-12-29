@@ -1,0 +1,76 @@
+# MySQL Database Dumper Configuration
+# =====================================
+
+# Define your database instances here
+instances:
+  primary:
+    host: "localhost"
+    port: 3306
+    user: "root"
+    password: "your_password"  # Or use environment variable: ${MYSQL_PRIMARY_PASSWORD}
+
+  secondary:
+    host: "192.168.1.100"
+    port: 3306
+    user: "admin"
+    password: "${MYSQL_SECONDARY_PASSWORD}"  # Uses environment variable
+
+# Output settings
+output:
+  directory: "./dumps"
+  format: "sql"  # sql, csv
+  compress: false  # gzip compression
+  timestamp_suffix: true  # Append timestamp to dump files
+  separate_files: true  # Create separate files per table
+
+# Global defaults (can be overridden per database/table)
+defaults:
+  row_limit: null  # null = unlimited, or specify a number
+  order_by: null  # Column name to order by
+  order_direction: "ASC"  # ASC or DESC
+  where_clause: null  # Optional WHERE condition
+
+# Databases to dump
+databases:
+  # Example: Dump entire database with defaults
+  - name: "ecommerce_db"
+    instance: "primary"
+    tables: "*"  # "*" means all tables
+
+  # Example: Dump specific tables with custom settings
+  - name: "analytics_db"
+    instance: "primary"
+    row_limit: 10000  # Override default for this database
+    tables:
+      - name: "user_events"
+        row_limit: 5000
+        order_by: "created_at"
+        order_direction: "DESC"
+
+      - name: "page_views"
+        row_limit: 1000
+        order_by: "id"
+        order_direction: "ASC"
+        where_clause: "created_at >= '2024-01-01'"
+
+      - name: "sessions"
+        # Uses database-level defaults
+
+  # Example: From a different database instance
+  - name: "legacy_db"
+    instance: "secondary"
+    tables:
+      - name: "customers"
+        row_limit: null  # Unlimited
+        order_by: "customer_id"
+        order_direction: "ASC"
+
+      - name: "orders"
+        row_limit: 50000
+        order_by: "order_date"
+        order_direction: "DESC"
+
+# Logging settings
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "./dumps/dump.log"

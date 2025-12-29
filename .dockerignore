@@ -1,0 +1,55 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Docker
+docker/Dockerfile*
+docker/docker-compose*.yml
+.docker
+.dockerignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+.Python
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# Project specific
+dumps/
+
+# Documentation
+*.md
+!README.md
+LICENSE
+
+# Config with secrets (use environment variables instead)
+config.yaml
+
+# Misc
+logs/
+tmp/

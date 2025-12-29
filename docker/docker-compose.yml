@@ -1,0 +1,44 @@
+# MySQL Database Dumper - Docker Compose Configuration
+# Uses Compose Specification (latest)
+# Reference: https://docs.docker.com/compose/compose-file/
+
+name: mysql-db-dumper
+
+services:
+  dumper:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      # BuildKit-specific build options
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+    image: mysql-db-dumper:latest
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ../config.yaml:/app/config.yaml:ro
+      - ../dumps:/app/dumps
+    networks:
+      - mysql-dumper-net
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true # Read-only root filesystem (dumps volume is writable)
+    tmpfs: # Temporary filesystems for runtime
+      - /tmp:mode=1777,size=64M
+    # Override default command to run with config
+    command:
+      - --config
+      - /app/config.yaml
+
+networks:
+  mysql-dumper-net:
+    driver: bridge

@@ -1,0 +1,201 @@
+# MySQL Database Dumper
+
+A configurable Python script to dump MySQL databases with support for multiple instances, row limits, custom ordering, and more.
+
+## Features
+
+- **Multiple Database Instances**: Connect to different MySQL servers
+- **Configurable Row Limits**: Dump all rows or specify a limit
+- **Custom Ordering**: Sort by any column in ASC or DESC order
+- **WHERE Clauses**: Filter data with custom conditions
+- **Multiple Output Formats**: SQL or CSV
+- **Compression**: Optional gzip compression
+- **Environment Variables**: Secure password management via env vars
+- **Flexible Configuration**: YAML-based configuration file
+
+## Installation
+
+```bash
+# Create virtual environment (optional but recommended)
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+## Configuration
+
+Edit `config.yaml` to configure your dump settings:
+
+### Database Instances
+
+```yaml
+instances:
+  primary:
+    host: "localhost"
+    port: 3306
+    user: "root"
+    password: "your_password"
+
+  secondary:
+    host: "192.168.1.100"
+    port: 3306
+    user: "admin"
+    password: "${MYSQL_SECONDARY_PASSWORD}"  # Environment variable
+```
+
+### Databases and Tables
+
+```yaml
+databases:
+  # Dump all tables from a database
+  - name: "my_database"
+    instance: "primary"
+    tables: "*"
+
+  # Dump specific tables with custom settings
+  - name: "analytics_db"
+    instance: "primary"
+    tables:
+      - name: "events"
+        row_limit: 10000
+        order_by: "created_at"
+        order_direction: "DESC"
+        where_clause: "status = 'active'"
+```
+
+### Configuration Options
+
+| Option | Level | Description |
+|--------|-------|-------------|
+| `row_limit` | default/database/table | Number of rows to dump (null = unlimited) |
+| `order_by` | default/database/table | Column to sort by |
+| `order_direction` | default/database/table | ASC or DESC |
+| `where_clause` | default/database/table | SQL WHERE condition |
+
+Settings cascade: `defaults` → `database` → `table` (most specific wins)
+
+## Usage
+
+### Basic Usage
+
+```bash
+python src/db_dumper.py
+```
+
+### With Custom Config File
+
+```bash
+python src/db_dumper.py -c /path/to/config.yaml
+```
+
+### Dry Run (Preview)
+
+```bash
+python src/db_dumper.py --dry-run
+```
+
+### Verbose Output
+
+```bash
+python src/db_dumper.py -v
+```
+
+## Output Structure
+
+```
+dumps/
+├── ecommerce_db_20241229_143022/
+│   ├── users.sql
+│   ├── orders.sql
+│   └── products.sql
+├── analytics_db_20241229_143022/
+│   ├── user_events.sql
+│   └── page_views.sql
+└── dump.log
+```
+
+## Environment Variables
+
+For security, you can use environment variables for passwords:
+
+```yaml
+instances:
+  production:
+    password: "${MYSQL_PROD_PASSWORD}"
+```
+
+Then set the environment variable:
+
+```bash
+export MYSQL_PROD_PASSWORD="your_secure_password"
+python src/db_dumper.py
+```
+
+## Examples
+
+### Dump Last 1000 Orders
+
+```yaml
+databases:
+  - name: "shop_db"
+    instance: "primary"
+    tables:
+      - name: "orders"
+        row_limit: 1000
+        order_by: "order_date"
+        order_direction: "DESC"
+```
+
+### Dump Active Users Only
+
+```yaml
+databases:
+  - name: "app_db"
+    instance: "primary"
+    tables:
+      - name: "users"
+        where_clause: "status = 'active' AND last_login > '2024-01-01'"
+        order_by: "last_login"
+        order_direction: "DESC"
+```
+
+### Dump to CSV with Compression
+
+```yaml
+output:
+  directory: "./exports"
+  format: "csv"
+  compress: true
+```
+
+### Multiple Instances
+
+```yaml
+instances:
+  us_east:
+    host: "db-us-east.example.com"
+    port: 3306
+    user: "reader"
+    password: "${US_EAST_DB_PASSWORD}"
+
+  eu_west:
+    host: "db-eu-west.example.com"
+    port: 3306
+    user: "reader"
+    password: "${EU_WEST_DB_PASSWORD}"
+
+databases:
+  - name: "users"
+    instance: "us_east"
+    tables: "*"
+
+  - name: "users"
+    instance: "eu_west"
+    tables: "*"
+```
+
+## License
+
+MIT License

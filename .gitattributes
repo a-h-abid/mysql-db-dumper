@@ -1,0 +1,41 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Python files
+*.py text diff=python
+
+# Configuration files
+*.yaml text
+*.yml text
+*.json text
+
+# Documentation
+*.md text diff=markdown
+*.txt text
+*.rst text
+LICENSE text
+README text
+
+# Shell scripts
+*.sh text eol=lf
+*.bash text eol=lf
+
+# SQL files
+*.sql text
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.gz binary
+*.zip binary
+*.tar binary
+*.7z binary
+
+# Archives containing database dumps
+*.sql.gz binary
+
+# Requirements file
+requirements.txt text
