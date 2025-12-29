@@ -25,6 +25,7 @@ from typing import Optional, Dict, List, Any, Union
 import yaml
 import mysql.connector
 from mysql.connector import Error as MySQLError
+from mysql.connector.cursor import MySQLCursorBuffered
 
 
 class ConfigLoader:
@@ -126,9 +127,17 @@ class DatabaseConnection:
         finally:
             cursor.close()
 
-    def get_cursor(self):
-        """Get a cursor for streaming large results."""
-        return self.connection.cursor()
+    def get_cursor(self, buffered: bool = False):
+        """Get a cursor for streaming large results.
+        
+        Args:
+            buffered: If False (default), uses server-side cursor for memory-efficient
+                     streaming of large result sets. If True, uses buffered cursor.
+        """
+        if buffered:
+            return self.connection.cursor(buffered=True)
+        # Use unbuffered cursor for memory-efficient streaming
+        return self.connection.cursor(buffered=False)
 
     def get_tables(self) -> List[str]:
         """Get list of all tables in the current database."""
@@ -170,11 +179,23 @@ class DatabaseConnection:
 class TableDumper:
     """Handles dumping of individual tables."""
 
-    BATCH_SIZE = 1000
+    DEFAULT_BATCH_SIZE = 1000
+    CSV_BATCH_SIZE = 5000  # Larger batches for CSV as it's simpler
 
     def __init__(self, connection: DatabaseConnection, output_settings: Dict):
         self.connection = connection
         self.output_settings = output_settings
+        self.batch_size = output_settings.get('batch_size', self.DEFAULT_BATCH_SIZE)
+        
+        # Pre-build type formatters for faster dispatch
+        self._type_formatters = {
+            type(None): lambda v: 'NULL',
+            bool: lambda v: '1' if v else '0',
+            int: str,
+            float: str,
+            bytes: lambda v: f"X'{v.hex()}'",
+            datetime: lambda v: f"'{v.strftime('%Y-%m-%d %H:%M:%S')}'",
+        }
 
     def dump_table(
         self,
@@ -302,7 +323,7 @@ class TableDumper:
             batch.append(row)
             rows_dumped += 1
 
-            if len(batch) >= self.BATCH_SIZE:
+            if len(batch) >= self.batch_size:
                 self._write_insert_batch(file_handle, table, quoted_columns, batch)
                 batch = []
 
@@ -339,22 +360,19 @@ class TableDumper:
         file_handle.write(';\n\n')
 
     def _format_sql_value(self, value: Any) -> str:
-        """Format a value for SQL INSERT statement."""
-        if value is None:
-            return 'NULL'
-        elif isinstance(value, bool):
-            return '1' if value else '0'
-        elif isinstance(value, (int, float)):
-            return str(value)
-        elif isinstance(value, bytes):
-            return f"X'{value.hex()}'"
-        elif isinstance(value, datetime):
-            return f"'{value.strftime('%Y-%m-%d %H:%M:%S')}'"
-        else:
-            # Escape string
-            escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
-            escaped = escaped.replace("\n", "\\n").replace("\r", "\\r")
-            return f"'{escaped}'"
+        """Format a value for SQL INSERT statement.
+        
+        Uses type-based dispatch for common types to avoid isinstance() overhead.
+        """
+        # Fast path: direct type lookup
+        formatter = self._type_formatters.get(type(value))
+        if formatter:
+            return formatter(value)
+        
+        # Slow path: string conversion with escaping
+        escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
+        escaped = escaped.replace("\n", "\\n").replace("\r", "\\r")
+        return f"'{escaped}'"
 
     def _dump_as_csv(
         self,
@@ -363,7 +381,7 @@ class TableDumper:
         columns: List[str],
         query: str
     ) -> int:
-        """Dump table data as CSV."""
+        """Dump table data as CSV with batched writes for better performance."""
         import csv
 
         writer = csv.writer(file_handle, quoting=csv.QUOTE_MINIMAL)
@@ -371,14 +389,24 @@ class TableDumper:
         # Write header
         writer.writerow(columns)
 
-        # Write data
+        # Write data in batches for better I/O performance
         cursor = self.connection.get_cursor()
         cursor.execute(query)
 
         rows_dumped = 0
+        batch = []
+        
         for row in cursor:
-            writer.writerow(row)
+            batch.append(row)
             rows_dumped += 1
+            
+            if len(batch) >= self.CSV_BATCH_SIZE:
+                writer.writerows(batch)
+                batch = []
+        
+        # Write remaining rows
+        if batch:
+            writer.writerows(batch)
 
         cursor.close()
         return rows_dumped
@@ -398,7 +426,25 @@ class DatabaseDumper:
             'errors': []
         }
 
-    def _is_table_excluded(self, table_name: str, exclude_patterns: List[str]) -> bool:
+    def _compile_exclusion_patterns(self, exclude_patterns: List[str]) -> List[re.Pattern]:
+        """
+        Pre-compile exclusion patterns to regex for faster matching.
+        
+        Converts fnmatch patterns to compiled regex patterns.
+        """
+        compiled = []
+        for pattern in exclude_patterns:
+            # Convert fnmatch pattern to regex
+            regex_pattern = fnmatch.translate(pattern)
+            compiled.append(re.compile(regex_pattern))
+        return compiled
+
+    def _is_table_excluded(
+        self,
+        table_name: str,
+        exclude_patterns: List[str],
+        compiled_patterns: List[re.Pattern] = None
+    ) -> bool:
         """
         Check if a table should be excluded based on patterns.
 
@@ -406,16 +452,21 @@ class DatabaseDumper:
         - Exact matches: 'users_backup'
         - Wildcard patterns: '*_old', 'tmp_*', '*_backup_*'
 
-        Uses fnmatch for Unix shell-style wildcards:
-        - * matches everything
-        - ? matches any single character
-        - [seq] matches any character in seq
-        - [!seq] matches any character not in seq
+        Uses pre-compiled regex patterns for better performance when
+        checking many tables against the same exclusion list.
         """
-        for pattern in exclude_patterns:
-            if fnmatch.fnmatch(table_name, pattern):
-                logging.debug(f"Table '{table_name}' excluded by pattern '{pattern}'")
-                return True
+        if compiled_patterns:
+            # Fast path: use pre-compiled patterns
+            for i, compiled in enumerate(compiled_patterns):
+                if compiled.match(table_name):
+                    logging.debug(f"Table '{table_name}' excluded by pattern '{exclude_patterns[i]}'")
+                    return True
+        else:
+            # Fallback: use fnmatch directly
+            for pattern in exclude_patterns:
+                if fnmatch.fnmatch(table_name, pattern):
+                    logging.debug(f"Table '{table_name}' excluded by pattern '{pattern}'")
+                    return True
         return False
 
     def run(self) -> Dict:
@@ -476,6 +527,9 @@ class DatabaseDumper:
                 # Get tables to dump
                 tables_config = db_config.get('tables', '*')
                 exclude_patterns = db_config.get('exclude_tables', [])
+                
+                # Pre-compile exclusion patterns for faster matching
+                compiled_patterns = self._compile_exclusion_patterns(exclude_patterns) if exclude_patterns else None
 
                 if tables_config == '*':
                     # Dump all tables
@@ -485,7 +539,7 @@ class DatabaseDumper:
                         original_count = len(table_names)
                         table_names = [
                             t for t in table_names
-                            if not self._is_table_excluded(t, exclude_patterns)
+                            if not self._is_table_excluded(t, exclude_patterns, compiled_patterns)
                         ]
                         excluded_count = original_count - len(table_names)
                         if excluded_count > 0:
@@ -499,7 +553,8 @@ class DatabaseDumper:
                             t for t in tables_to_dump
                             if not self._is_table_excluded(
                                 t['name'] if isinstance(t, dict) else t,
-                                exclude_patterns
+                                exclude_patterns,
+                                compiled_patterns
                             )
                         ]
 

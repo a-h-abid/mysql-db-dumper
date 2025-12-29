@@ -22,6 +22,7 @@ output:
   compress: false  # gzip compression
   timestamp_suffix: true  # Append timestamp to dump files
   separate_files: true  # Create separate files per table
+  batch_size: 1000  # Number of rows per INSERT statement (tune for performance)
 
 # Global defaults (can be overridden per database/table)
 defaults:
