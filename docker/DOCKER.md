@@ -110,11 +110,25 @@ This Dockerfile uses several BuildKit features:
 
 2. **Multi-stage Builds**: Separate builder and runtime stages for smaller images
 
-3. **Inline Cache**: Build cache can be exported/imported for CI/CD
+3. **Registry Cache**: Build cache is stored in a container registry for sharing across machines and CI/CD pipelines
    ```yaml
-   args:
-     BUILDKIT_INLINE_CACHE: 1
+   cache_from:
+     - type=registry,ref=docker.io/mysql-db-dumper:buildcache
+   cache_to:
+     - type=registry,ref=docker.io/mysql-db-dumper:buildcache,mode=max
    ```
+
+### Builder Requirement
+
+The registry cache backend requires a builder with a driver other than the default `docker` driver. Create a buildx builder before building:
+
+```bash
+# Create and use a new builder with docker-container driver
+docker buildx create --use --name mybuilder
+
+# Verify the builder is active
+docker buildx ls
+```
 
 ## Security Features
 
