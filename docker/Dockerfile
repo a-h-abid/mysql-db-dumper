@@ -37,6 +37,20 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --user -r requirements.txt
 
 # ============================================================================
+# Stage 2a: Dev - For Development & Testing
+# ============================================================================
+FROM builder AS dev
+
+WORKDIR /app
+
+# Copy only requirements first for better cache utilization
+COPY requirements-dev.txt .
+
+# Install Python dependencies with cache mount
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --user -r requirements-dev.txt
+
+# ============================================================================
 # Stage 3: Final runtime image
 # ============================================================================
 FROM base AS runtime
