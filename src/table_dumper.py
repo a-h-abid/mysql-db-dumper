@@ -119,6 +119,12 @@ class TableDumper:
             query += f" ORDER BY `{settings.order_by}` {direction}"
         elif settings.order_by:
             logging.warning(f"Order column '{settings.order_by}' not found in table '{table}'")
+        elif settings.order_direction != "ASC":
+            # User set order_direction but not order_by - warn them
+            logging.warning(
+                f"Table '{table}': 'order_direction' is set to '{settings.order_direction}' "
+                f"but 'order_by' is not specified. The order_direction setting will be ignored."
+            )
 
         if settings.row_limit is not None and settings.row_limit >= 0:
             query += f" LIMIT {settings.row_limit}"

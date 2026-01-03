@@ -230,3 +230,12 @@ class TestDumpSettings:
         assert settings.order_by == "db_col"  # db wins over default
         assert settings.order_direction == "ASC"  # default
         assert settings.where_clause == "default_where"  # default
+
+    def test_from_configs_table_order_direction_overrides(self):
+        """Test that table-level order_direction overrides database-level."""
+        defaults = {"order_direction": "ASC"}
+        db_config = {"order_direction": "ASC", "order_by": "id"}
+        table_config = {"order_direction": "DESC"}  # Should override!
+        settings = DumpSettings.from_configs(defaults, db_config, table_config)
+        assert settings.order_direction == "DESC"  # table wins
+        assert settings.order_by == "id"  # from db_config

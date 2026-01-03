@@ -118,6 +118,16 @@ class TestBuildSelectQuery:
         query = dumper._build_select_query("users", ["id", "name"], settings)
         assert "ORDER BY" not in query
 
+    def test_order_direction_without_order_by_warns(self, dumper, caplog):
+        """Test that setting order_direction without order_by logs a warning."""
+        import logging
+        caplog.set_level(logging.WARNING)
+        settings = DumpSettings(order_direction="DESC")  # No order_by!
+        query = dumper._build_select_query("users", ["id", "name"], settings)
+        assert "ORDER BY" not in query
+        assert "order_direction" in caplog.text
+        assert "order_by" in caplog.text
+
     def test_column_quoting(self, dumper):
         """Test that column names are properly quoted."""
         settings = DumpSettings()
