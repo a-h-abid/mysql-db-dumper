@@ -13,7 +13,7 @@
 *.md text diff=markdown
 *.txt text
 *.rst text
-LICENSE text
+LICENSE text export-ignore
 README text
 
 # Shell scripts
@@ -39,3 +39,6 @@ README text
 
 # Requirements file
 requirements.txt text
+
+# Others
+.github/ export-ignore
