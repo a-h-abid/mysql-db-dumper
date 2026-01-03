@@ -294,7 +294,7 @@ class TableDumper:
             else:
                 logging.warning(f"Order column '{order_by}' not found in table '{table}'")
 
-        if row_limit is not None and row_limit > 0:
+        if row_limit is not None and row_limit >= 0:
             query += f" LIMIT {row_limit}"
 
         return query
@@ -603,12 +603,24 @@ class DatabaseDumper:
                     table_name = table_config['name']
 
                     # Merge settings: defaults < database < table
+                    # Table-level settings have highest priority and override database-level settings
                     settings = {**self.defaults}
                     for key in ['row_limit', 'order_by', 'order_direction', 'where_clause']:
+                        # Override with database-level setting if present
                         if key in db_config:
                             settings[key] = db_config[key]
+                        # Override with table-level setting if present (highest priority)
                         if key in table_config:
                             settings[key] = table_config[key]
+
+                    # Log effective settings at debug level
+                    logging.debug(
+                        f"Table '{table_name}' effective settings: "
+                        f"row_limit={settings.get('row_limit')}, "
+                        f"order_by={settings.get('order_by')}, "
+                        f"order_direction={settings.get('order_direction')}, "
+                        f"where_clause={settings.get('where_clause')}"
+                    )
 
                     # Determine output file
                     if separate_files:
@@ -737,6 +749,7 @@ def main():
     if args.dry_run:
         logging.info("DRY RUN MODE - No data will be dumped")
         databases = config.get_databases()
+        defaults = config.get_defaults()
 
         # Apply filters for dry run as well
         if args.database:
@@ -746,13 +759,38 @@ def main():
 
         for db in databases:
             logging.info(f"Would dump database: {db['name']} from instance: {db.get('instance', 'primary')}")
+            db_row_limit = db.get('row_limit')
+            if db_row_limit is not None:
+                logging.info(f"  Database-level row_limit: {db_row_limit}")
+
             tables = db.get('tables', '*')
             if tables == '*':
-                logging.info("  - All tables")
+                logging.info("  - All tables (with database/default settings)")
             else:
                 for t in tables:
                     if isinstance(t, dict):
-                        logging.info(f"  - {t['name']}")
+                        table_name = t['name']
+                        # Compute effective settings (same logic as actual dump)
+                        settings = {**defaults}
+                        for key in ['row_limit', 'order_by', 'order_direction', 'where_clause']:
+                            if key in db:
+                                settings[key] = db[key]
+                            if key in t:
+                                settings[key] = t[key]
+
+                        # Build settings display
+                        settings_parts = []
+                        if settings.get('row_limit') is not None:
+                            settings_parts.append(f"limit={settings['row_limit']}")
+                        if settings.get('order_by'):
+                            settings_parts.append(f"order={settings['order_by']} {settings.get('order_direction', 'ASC')}")
+                        if settings.get('where_clause'):
+                            settings_parts.append(f"where='{settings['where_clause']}'")
+
+                        if settings_parts:
+                            logging.info(f"  - {table_name} ({', '.join(settings_parts)})")
+                        else:
+                            logging.info(f"  - {table_name} (no limits)")
                     else:
                         logging.info(f"  - {t}")
         sys.exit(0)
