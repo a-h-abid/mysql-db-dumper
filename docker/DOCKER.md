@@ -96,6 +96,9 @@ docker compose down -v
 
 # Run one-off command
 docker compose run --rm dumper python -c "print('Hello')"
+
+# Run Unit Tests
+docker compose run --rm dumper python -m pytest tests/ -v
 ```
 
 ## BuildKit Features Used

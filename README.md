@@ -325,6 +325,14 @@ databases:
     tables: "*"
 ```
 
+## Unit Tests
+
+Run unit tests using below command.
+
+```bash
+python -m pytest tests/ -v
+```
+
 ## License
 
 MIT License
