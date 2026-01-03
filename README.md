@@ -36,8 +36,7 @@ src/
 ├── database_dumper.py # Main orchestration
 ├── table_dumper.py    # Table dump logic
 ├── models.py          # Data models and enums
-├── utils.py           # Utility functions
-└── db_dumper.py       # Backward compatibility wrapper
+└── utils.py           # Utility functions
 ```
 
 ## Configuration
@@ -140,11 +139,7 @@ Settings cascade: `defaults` → `database` → `table` (most specific wins)
 ### Basic Usage
 
 ```bash
-# Recommended: run as a package module
 python -m src
-
-# Alternative: use the wrapper script
-python src/db_dumper.py
 ```
 
 ### With Custom Config File
@@ -231,7 +226,7 @@ Then set the environment variable:
 
 ```bash
 export MYSQL_PROD_PASSWORD="your_secure_password"
-python src/db_dumper.py
+python -m src
 ```
 
 ## Examples
