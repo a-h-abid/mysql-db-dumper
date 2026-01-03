@@ -25,7 +25,8 @@ def setup_logging(log_settings: dict[str, Any]) -> None:
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=handlers
+        handlers=handlers,
+        force=True
     )
 
 
