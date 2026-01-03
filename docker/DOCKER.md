@@ -203,3 +203,7 @@ docker buildx build \
   --cache-from type=local,src=/tmp/cache \
   -t mysql-db-dumper .
 ```
+
+## Container Entrypoint
+
+The Docker container uses `python -m src.main` as its entrypoint, running the application as a proper Python package module. This ensures correct handling of relative imports across the modular codebase.

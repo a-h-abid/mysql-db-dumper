@@ -24,6 +24,22 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Project Structure
+
+```
+src/
+├── __init__.py        # Package exports
+├── __main__.py        # Entry point for `python -m src`
+├── main.py            # CLI argument parsing
+├── config.py          # Configuration loading
+├── connection.py      # Database connection management
+├── database_dumper.py # Main orchestration
+├── table_dumper.py    # Table dump logic
+├── models.py          # Data models and enums
+├── utils.py           # Utility functions
+└── db_dumper.py       # Backward compatibility wrapper
+```
+
 ## Configuration
 
 Edit `config.yaml` to configure your dump settings:
@@ -124,25 +140,29 @@ Settings cascade: `defaults` → `database` → `table` (most specific wins)
 ### Basic Usage
 
 ```bash
+# Recommended: run as a package module
+python -m src
+
+# Alternative: use the wrapper script
 python src/db_dumper.py
 ```
 
 ### With Custom Config File
 
 ```bash
-python src/db_dumper.py -c /path/to/config.yaml
+python -m src -c /path/to/config.yaml
 ```
 
 ### Dry Run (Preview)
 
 ```bash
-python src/db_dumper.py --dry-run
+python -m src --dry-run
 ```
 
 ### Verbose Output
 
 ```bash
-python src/db_dumper.py -v
+python -m src -v
 ```
 
 ### Dump Specific Database
@@ -150,9 +170,9 @@ python src/db_dumper.py -v
 Dump only a specific database from your configuration:
 
 ```bash
-python src/db_dumper.py --database my_database
+python -m src --database my_database
 # or
-python src/db_dumper.py -d my_database
+python -m src -d my_database
 ```
 
 ### Dump from Specific Instance
@@ -160,9 +180,9 @@ python src/db_dumper.py -d my_database
 Dump only databases configured for a specific instance:
 
 ```bash
-python src/db_dumper.py --instance primary
+python -m src --instance primary
 # or
-python src/db_dumper.py -i secondary
+python -m src -i secondary
 ```
 
 ### Combine Filters
@@ -170,7 +190,7 @@ python src/db_dumper.py -i secondary
 You can combine filters to dump a specific database from a specific instance:
 
 ```bash
-python src/db_dumper.py --database users --instance us_east
+python -m src --database users --instance us_east
 ```
 
 ### Command Line Options

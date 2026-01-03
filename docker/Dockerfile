@@ -70,8 +70,8 @@ USER dumper
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python --version && mysql --version || exit 1
 
-# Default entrypoint
-ENTRYPOINT ["python", "src/db_dumper.py"]
+# Default entrypoint - run as package module
+ENTRYPOINT ["python", "-m", "src.main"]
 
 # Default command (can be overridden)
 CMD ["--help"]
