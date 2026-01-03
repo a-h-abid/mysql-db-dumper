@@ -205,10 +205,16 @@ class TableDumper:
         order_by: Optional[str] = None,
         order_direction: str = "ASC",
         where_clause: Optional[str] = None,
-        output_format: str = "sql"
+        output_format: str = "sql",
+        append: bool = False
     ) -> Dict:
         """
         Dump a table to file.
+
+        Args:
+            append: If True, append to existing file instead of overwriting.
+                   Used when separate_files is False to write multiple tables
+                   to the same file.
 
         Returns:
             Dict with dump statistics
@@ -234,11 +240,12 @@ class TableDumper:
             logging.info(f"Dumping table '{table}' with query: {query[:200]}...")
 
             # Open output file
+            file_mode = 'at' if append else 'wt'
             if self.output_settings.get('compress', False):
                 output_path = Path(str(output_path) + '.gz')
-                file_handle = gzip.open(output_path, 'wt', encoding='utf-8')
+                file_handle = gzip.open(output_path, file_mode, encoding='utf-8')
             else:
-                file_handle = open(output_path, 'w', encoding='utf-8')
+                file_handle = open(output_path, file_mode[0], encoding='utf-8')
 
             try:
                 if output_format == 'sql':
@@ -585,6 +592,10 @@ class DatabaseDumper:
                 dumper = TableDumper(conn, self.output_settings)
                 output_format = self.output_settings.get('format', 'sql')
 
+                # Track if we need to append when using single file mode
+                separate_files = self.output_settings.get('separate_files', True)
+                is_first_table = True
+
                 for table_config in tables_to_dump:
                     if isinstance(table_config, str):
                         table_config = {'name': table_config}
@@ -600,12 +611,16 @@ class DatabaseDumper:
                             settings[key] = table_config[key]
 
                     # Determine output file
-                    if self.output_settings.get('separate_files', True):
+                    if separate_files:
                         ext = 'csv' if output_format == 'csv' else 'sql'
                         output_path = db_output_dir / f"{table_name}.{ext}"
+                        append = False
                     else:
                         ext = 'csv' if output_format == 'csv' else 'sql'
                         output_path = db_output_dir / f"{db_name}.{ext}"
+                        # Append to file for all tables after the first one
+                        append = not is_first_table
+                        is_first_table = False
 
                     # Dump table
                     table_stats = dumper.dump_table(
@@ -615,7 +630,8 @@ class DatabaseDumper:
                         order_by=settings.get('order_by'),
                         order_direction=settings.get('order_direction', 'ASC'),
                         where_clause=settings.get('where_clause'),
-                        output_format=output_format
+                        output_format=output_format,
+                        append=append
                     )
 
                     db_stats['tables'].append(table_stats)
