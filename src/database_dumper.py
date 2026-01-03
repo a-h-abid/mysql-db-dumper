@@ -148,13 +148,19 @@ class DatabaseDumper:
     ) -> None:
         """Process and dump all tables for a database."""
         db_name = db_config['name']
+        separate_files = self.output_settings.get('separate_files', True)
 
-        # Create output subdirectory
-        if self.output_settings.get('timestamp_suffix', True):
-            db_output_dir = output_dir / f"{db_name}_{timestamp}"
+        # Create output subdirectory only for separate_files mode
+        if separate_files:
+            if self.output_settings.get('timestamp_suffix', True):
+                db_output_dir = output_dir / f"{db_name}_{timestamp}"
+            else:
+                db_output_dir = output_dir / db_name
+            db_output_dir.mkdir(parents=True, exist_ok=True)
         else:
-            db_output_dir = output_dir / db_name
-        db_output_dir.mkdir(parents=True, exist_ok=True)
+            # Single file mode: use output_dir directly
+            db_output_dir = output_dir
+            db_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Get tables to dump
         tables_to_dump = self._get_tables_to_dump(conn, db_config)
@@ -168,7 +174,7 @@ class DatabaseDumper:
         for i, table_config in enumerate(tables_to_dump):
             table_stats = self._dump_single_table(
                 dumper, table_config, db_config, db_output_dir,
-                output_format, separate_files, is_first=(i == 0)
+                output_format, separate_files, timestamp, is_first=(i == 0)
             )
 
             db_stats.tables.append(table_stats)
@@ -222,6 +228,7 @@ class DatabaseDumper:
         db_output_dir: Path,
         output_format: OutputFormat,
         separate_files: bool,
+        timestamp: str,
         is_first: bool
     ) -> TableStats:
         """Dump a single table and return stats."""
@@ -242,7 +249,12 @@ class DatabaseDumper:
             output_path = db_output_dir / f"{table_name}.{output_format.extension}"
             append = False
         else:
-            output_path = db_output_dir / f"{db_config['name']}.{output_format.extension}"
+            # Single file directly in output directory
+            db_name = db_config['name']
+            if self.output_settings.get('timestamp_suffix', True):
+                output_path = db_output_dir / f"{db_name}_{timestamp}.{output_format.extension}"
+            else:
+                output_path = db_output_dir / f"{db_name}.{output_format.extension}"
             append = not is_first
 
         return dumper.dump_table(
