@@ -14,7 +14,11 @@ services:
         - type=registry,ref=ghcr.io/a-h-abid/mysql-db-dumper:buildcache
       cache_to:
         - type=registry,ref=ghcr.io/a-h-abid/mysql-db-dumper:buildcache,mode=max
-    image: mysql-db-dumper:latest
+      target: ${BUILD_TARGET:-runtime}
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: ghcr.io/a-h-abid/mysql-db-dumper:latest
     environment:
       - TZ=${TZ:-UTC}
     volumes:

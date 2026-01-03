@@ -1,0 +1,6 @@
+services:
+  dumper:
+    image: ghcr.io/a-h-abid/mysql-db-dumper:${BUILD_TARGET}
+    volumes:
+      - ../src:/app/src
+      - ../tests:/app/tests

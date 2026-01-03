@@ -43,6 +43,7 @@ config.yaml
 
 # Docker
 docker/docker-compose.override*.yml
+!docker/docker-compose.override.example.yml
 
 # OS generated files
 .DS_Store
