@@ -8,6 +8,11 @@ instances:
     port: 3306
     user: "root"
     password: "your_password"  # Or use environment variable: ${MYSQL_PRIMARY_PASSWORD}
+    # Connection settings (optional)
+    connect_timeout: 30  # Connection timeout in seconds (default: 30)
+    read_timeout: 300    # Read timeout in seconds for large queries (default: 300)
+    max_retries: 3       # Number of retry attempts for transient failures (default: 3)
+    retry_delay: 2       # Delay between retries in seconds (default: 2)
 
   secondary:
     host: "192.168.1.100"
@@ -23,6 +28,7 @@ output:
   timestamp_suffix: true  # Append timestamp to dump files
   separate_files: true  # Create separate files per table
   batch_size: 1000  # Number of rows per INSERT statement (tune for performance)
+                    # Must be a positive integer
 
 # Global defaults (can be overridden per database/table)
 defaults:

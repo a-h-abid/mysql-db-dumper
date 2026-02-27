@@ -12,6 +12,34 @@ A configurable Python script to dump MySQL databases with support for multiple i
 - **Compression**: Optional gzip compression
 - **Environment Variables**: Secure password management via env vars
 - **Flexible Configuration**: YAML-based configuration file
+- **Connection Reliability**: Automatic retry on transient failures with configurable timeouts
+- **Progress Tracking**: Real-time progress indicators for large table dumps
+- **Security Validation**: Automatic validation of passwords and configuration values
+
+## Recent Improvements
+
+### Security
+- ✅ Password validation to prevent empty credentials
+- ✅ Input validation for ports, batch sizes, and other config values
+- ✅ Connection timeouts to prevent resource exhaustion
+
+### Performance
+- ✅ Progress indicators for long-running dumps (logs every 10,000 rows)
+- ✅ Configurable connection and read timeouts
+- ✅ Memory-efficient streaming with unbuffered cursors
+
+### Reliability
+- ✅ Automatic retry logic for transient connection failures (3 retries by default)
+- ✅ Proper connection cleanup with context managers
+- ✅ Comprehensive error handling and reporting
+
+### Testing & CI
+- ✅ Test coverage increased from 73% to 83%
+- ✅ Automated CI/CD with GitHub Actions (Python 3.10, 3.11, 3.12)
+- ✅ Security scanning with Bandit
+- ✅ Code complexity analysis with Radon
+
+See [IMPROVEMENTS.md](IMPROVEMENTS.md) for detailed information about all improvements.
 
 ## Installation
 
@@ -52,6 +80,11 @@ instances:
     port: 3306
     user: "root"
     password: "your_password"
+    # Optional: Connection settings for reliability
+    connect_timeout: 30  # Connection timeout in seconds (default: 30)
+    read_timeout: 300    # Read timeout for large queries (default: 300)
+    max_retries: 3       # Retry attempts for transient failures (default: 3)
+    retry_delay: 2       # Delay between retries in seconds (default: 2)
 
   secondary:
     host: "192.168.1.100"
