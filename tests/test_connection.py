@@ -56,7 +56,8 @@ class TestDatabaseConnection:
             password="secret",
             database="testdb",
             charset='utf8mb4',
-            use_unicode=True
+            use_unicode=True,
+            connection_timeout=30
         )
         assert conn.connection == mock_connection
 
@@ -254,3 +255,74 @@ class TestDatabaseConnection:
 
         with pytest.raises(MySQLError):
             conn.connect()
+
+    @mock.patch('src.connection.mysql.connector.connect')
+    def test_get_create_table(self, mock_connect):
+        """Test getting CREATE TABLE statement."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.fetchall.return_value = [
+            ("users", "CREATE TABLE `users` (`id` int NOT NULL) ENGINE=InnoDB")
+        ]
+        mock_connection = mock.MagicMock()
+        mock_connection.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_connection
+
+        conn = DatabaseConnection(
+            host="localhost", port=3306, user="root", password="secret"
+        )
+        conn.connect()
+        result = conn.get_create_table("users")
+
+        assert result == "CREATE TABLE `users` (`id` int NOT NULL) ENGINE=InnoDB"
+
+    @mock.patch('src.connection.mysql.connector.connect')
+    def test_get_row_count(self, mock_connect):
+        """Test getting row count without WHERE clause."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.fetchall.return_value = [(42,)]
+        mock_connection = mock.MagicMock()
+        mock_connection.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_connection
+
+        conn = DatabaseConnection(
+            host="localhost", port=3306, user="root", password="secret"
+        )
+        conn.connect()
+        count = conn.get_row_count("users")
+
+        assert count == 42
+
+    @mock.patch('src.connection.mysql.connector.connect')
+    def test_get_row_count_with_where(self, mock_connect):
+        """Test getting row count with WHERE clause."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.fetchall.return_value = [(10,)]
+        mock_connection = mock.MagicMock()
+        mock_connection.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_connection
+
+        conn = DatabaseConnection(
+            host="localhost", port=3306, user="root", password="secret"
+        )
+        conn.connect()
+        count = conn.get_row_count("users", where_clause="active = 1")
+
+        assert count == 10
+        mock_cursor.execute.assert_called_once_with(
+            "SELECT COUNT(*) FROM `users` WHERE active = 1", None
+        )
+
+    def test_init_with_custom_timeouts(self):
+        """Test connection initialization with custom timeout."""
+        conn = DatabaseConnection(
+            host="localhost",
+            port=3306,
+            user="root",
+            password="secret",
+            connect_timeout=60,
+        )
+        assert conn.connect_timeout == 60
+
+    def test_default_timeout_constants(self):
+        """Test default timeout constants."""
+        assert DatabaseConnection.DEFAULT_CONNECT_TIMEOUT == 30

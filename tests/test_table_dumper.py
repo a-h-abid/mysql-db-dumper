@@ -297,3 +297,207 @@ class TestDumpTable:
 
             assert isinstance(stats, TableStats)
             assert stats.table == "users"
+
+    def test_dump_table_sql_with_data(self, mock_connection):
+        """Test dumping table as SQL with actual data."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(
+            return_value=iter([(1, "Alice"), (2, "Bob")])
+        )
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+            settings = DumpSettings()
+
+            stats = dumper.dump_table(
+                "users", output_path, settings, OutputFormat.SQL
+            )
+
+            assert stats.success is True
+            assert stats.rows_dumped == 2
+
+            content = output_path.read_text()
+            assert "INSERT INTO `users`" in content
+            assert "CREATE TABLE" in content
+            assert "DROP TABLE IF EXISTS" in content
+
+    def test_dump_table_csv_with_data(self, mock_connection):
+        """Test dumping table as CSV with actual data."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(
+            return_value=iter([(1, "Alice"), (2, "Bob")])
+        )
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.csv"
+            settings = DumpSettings()
+
+            stats = dumper.dump_table(
+                "users", output_path, settings, OutputFormat.CSV
+            )
+
+            assert stats.success is True
+            assert stats.rows_dumped == 2
+
+            content = output_path.read_text()
+            assert "id,name" in content
+
+    def test_dump_table_sql_batched(self, mock_connection):
+        """Test SQL dump with multiple batches."""
+        # Create enough rows to trigger batch writing
+        rows = [(i, f"User{i}") for i in range(5)]
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter(rows))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False, "batch_size": 2})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+            settings = DumpSettings()
+
+            stats = dumper.dump_table(
+                "users", output_path, settings, OutputFormat.SQL
+            )
+
+            assert stats.success is True
+            assert stats.rows_dumped == 5
+            content = output_path.read_text()
+            # Should have multiple INSERT statements due to batching
+            assert content.count("INSERT INTO") >= 2
+
+    def test_dump_table_csv_batched(self, mock_connection):
+        """Test CSV dump with multiple batches."""
+        rows = [(i, f"User{i}") for i in range(10)]
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter(rows))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        # Override CSV_BATCH_SIZE for testing
+        dumper = TableDumper(mock_connection, {"compress": False})
+        dumper.CSV_BATCH_SIZE = 3
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.csv"
+            settings = DumpSettings()
+
+            stats = dumper.dump_table(
+                "users", output_path, settings, OutputFormat.CSV
+            )
+
+            assert stats.success is True
+            assert stats.rows_dumped == 10
+
+    def test_dump_table_compressed(self, mock_connection):
+        """Test dumping table with gzip compression."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(
+            return_value=iter([(1, "Alice")])
+        )
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": True})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+            settings = DumpSettings()
+
+            stats = dumper.dump_table(
+                "users", output_path, settings, OutputFormat.SQL
+            )
+
+            assert stats.success is True
+            assert stats.file_path.endswith('.gz')
+
+
+class TestFormatSqlValue:
+    """Tests for _format_sql_value method."""
+
+    @pytest.fixture
+    def dumper(self):
+        mock_conn = mock.MagicMock()
+        return TableDumper(mock_conn, {})
+
+    def test_format_string(self, dumper):
+        """Test string formatting with escaping."""
+        result = dumper._format_sql_value("hello")
+        assert result == "'hello'"
+
+    def test_format_string_with_quotes(self, dumper):
+        """Test string with single quotes is escaped."""
+        result = dumper._format_sql_value("it's")
+        assert result == "'it\\'s'"
+
+    def test_format_string_with_backslash(self, dumper):
+        """Test string with backslash is escaped."""
+        result = dumper._format_sql_value("path\\to")
+        assert result == "'path\\\\to'"
+
+    def test_format_string_with_newlines(self, dumper):
+        """Test string with newlines is escaped."""
+        result = dumper._format_sql_value("line1\nline2\rline3")
+        assert result == "'line1\\nline2\\rline3'"
+
+    def test_format_none_via_method(self, dumper):
+        """Test None formatting via the method."""
+        result = dumper._format_sql_value(None)
+        assert result == "NULL"
+
+    def test_format_bool_via_method(self, dumper):
+        """Test bool formatting via the method."""
+        assert dumper._format_sql_value(True) == "1"
+        assert dumper._format_sql_value(False) == "0"
+
+    def test_format_int_via_method(self, dumper):
+        """Test int formatting via the method."""
+        assert dumper._format_sql_value(42) == "42"
+
+    def test_format_datetime_via_method(self, dumper):
+        """Test datetime formatting via the method."""
+        dt = datetime(2024, 6, 15, 12, 30, 0)
+        result = dumper._format_sql_value(dt)
+        assert result == "'2024-06-15 12:30:00'"
+
+
+class TestWriteInsertBatch:
+    """Tests for _write_insert_batch method."""
+
+    @pytest.fixture
+    def dumper(self):
+        mock_conn = mock.MagicMock()
+        return TableDumper(mock_conn, {})
+
+    def test_write_empty_batch(self, dumper):
+        """Test writing empty batch does nothing."""
+        import io
+        fh = io.StringIO()
+        dumper._write_insert_batch(fh, "users", "`id`, `name`", [])
+        assert fh.getvalue() == ""
+
+    def test_write_single_row_batch(self, dumper):
+        """Test writing a single row batch."""
+        import io
+        fh = io.StringIO()
+        dumper._write_insert_batch(fh, "users", "`id`, `name`", [(1, "Alice")])
+        content = fh.getvalue()
+        assert "INSERT INTO `users`" in content
+        assert "1" in content
+        assert "'Alice'" in content
+
+    def test_write_multi_row_batch(self, dumper):
+        """Test writing a multi-row batch."""
+        import io
+        fh = io.StringIO()
+        dumper._write_insert_batch(
+            fh, "users", "`id`, `name`",
+            [(1, "Alice"), (2, "Bob")]
+        )
+        content = fh.getvalue()
+        assert "INSERT INTO `users`" in content
+        assert content.count(",\n") == 1  # Two rows joined by comma

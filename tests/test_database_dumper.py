@@ -11,7 +11,7 @@ from unittest import mock
 import pytest
 
 from src.database_dumper import DatabaseDumper
-from src.models import DatabaseStats, DumpStats
+from src.models import DatabaseStats, DumpStats, OutputFormat, TableStats
 
 
 class TestCompileExclusionPatterns:
@@ -304,3 +304,372 @@ class TestRun:
 
             # Should return stats with empty databases
             assert result.databases == []
+
+
+class TestDumpDatabase:
+    """Tests for _dump_database method."""
+
+    @pytest.fixture
+    def mock_config(self):
+        """Create a comprehensive mock config."""
+        config = mock.MagicMock()
+        config.get_output_settings.return_value = {
+            "directory": "./dumps",
+            "format": "sql",
+            "separate_files": True,
+            "timestamp_suffix": True,
+        }
+        config.get_defaults.return_value = {}
+        config.get_instance.return_value = {
+            "host": "localhost",
+            "port": 3306,
+            "user": "root",
+            "password": "secret",
+        }
+        return config
+
+    @mock.patch('src.database_dumper.DatabaseConnection')
+    def test_dump_database_connection_error(self, mock_conn_class, mock_config):
+        """Test _dump_database handles connection errors."""
+        mock_conn_class.side_effect = Exception("Connection refused")
+
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "instance": "primary", "tables": "*"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._dump_database(db_config, Path(tmpdir), "20240101_120000")
+
+        assert len(dumper.stats.errors) == 1
+        assert dumper.stats.errors[0]["database"] == "testdb"
+        assert dumper.stats.errors[0]["table"] is None
+        assert len(dumper.stats.databases) == 1
+
+
+class TestProcessDatabaseTables:
+    """Tests for _process_database_tables method."""
+
+    @pytest.fixture
+    def mock_config(self):
+        config = mock.MagicMock()
+        config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": True,
+            "timestamp_suffix": True,
+        }
+        config.get_defaults.return_value = {}
+        return config
+
+    @mock.patch('src.database_dumper.TableDumper')
+    def test_process_tables_separate_files(self, mock_td_class, mock_config):
+        """Test processing tables with separate files mode."""
+        mock_td = mock.MagicMock()
+        mock_td.dump_table.return_value = TableStats(
+            table="users", rows_dumped=10, success=True
+        )
+        mock_td_class.return_value = mock_td
+
+        mock_conn = mock.MagicMock()
+        mock_conn.get_tables.return_value = ["users"]
+
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                mock_conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+
+        assert len(db_stats.tables) == 1
+        assert db_stats.total_rows == 10
+        assert dumper.stats.total_tables == 1
+
+    @mock.patch('src.database_dumper.TableDumper')
+    def test_process_tables_single_file(self, mock_td_class, mock_config):
+        """Test processing tables with single file mode."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+        }
+
+        mock_td = mock.MagicMock()
+        mock_td.dump_table.return_value = TableStats(
+            table="users", rows_dumped=5, success=True
+        )
+        mock_td_class.return_value = mock_td
+
+        mock_conn = mock.MagicMock()
+        mock_conn.get_tables.return_value = ["users"]
+
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                mock_conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+
+        assert len(db_stats.tables) == 1
+
+    @mock.patch('src.database_dumper.TableDumper')
+    def test_process_tables_no_timestamp_suffix(self, mock_td_class, mock_config):
+        """Test processing tables without timestamp suffix."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": True,
+            "timestamp_suffix": False,
+        }
+
+        mock_td = mock.MagicMock()
+        mock_td.dump_table.return_value = TableStats(
+            table="users", rows_dumped=3, success=True
+        )
+        mock_td_class.return_value = mock_td
+
+        mock_conn = mock.MagicMock()
+        mock_conn.get_tables.return_value = ["users"]
+
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                mock_conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+
+        assert len(db_stats.tables) == 1
+
+
+class TestGetTablesToDump:
+    """Tests for _get_tables_to_dump method."""
+
+    @pytest.fixture
+    def dumper(self):
+        config = mock.MagicMock()
+        config.get_output_settings.return_value = {}
+        config.get_defaults.return_value = {}
+        return DatabaseDumper(config)
+
+    def test_all_tables_no_exclusions(self, dumper):
+        """Test getting all tables without exclusions."""
+        mock_conn = mock.MagicMock()
+        mock_conn.get_tables.return_value = ["users", "orders"]
+        db_config = {"tables": "*"}
+
+        result = dumper._get_tables_to_dump(mock_conn, db_config)
+        assert result == [{"name": "users"}, {"name": "orders"}]
+
+    def test_all_tables_with_exclusions(self, dumper):
+        """Test getting all tables with exclusion patterns."""
+        mock_conn = mock.MagicMock()
+        mock_conn.get_tables.return_value = ["users", "users_backup", "orders"]
+        db_config = {"tables": "*", "exclude_tables": ["*_backup"]}
+
+        result = dumper._get_tables_to_dump(mock_conn, db_config)
+        assert result == [{"name": "users"}, {"name": "orders"}]
+
+    def test_explicit_table_list(self, dumper):
+        """Test with explicit table list (no exclusions)."""
+        mock_conn = mock.MagicMock()
+        db_config = {
+            "tables": [
+                {"name": "users", "row_limit": 100},
+                {"name": "orders"},
+            ]
+        }
+
+        result = dumper._get_tables_to_dump(mock_conn, db_config)
+        assert len(result) == 2
+
+    def test_explicit_table_list_with_exclusions(self, dumper):
+        """Test explicit table list with exclusion patterns."""
+        mock_conn = mock.MagicMock()
+        db_config = {
+            "tables": [
+                {"name": "users"},
+                {"name": "users_backup"},
+                "orders",
+            ],
+            "exclude_tables": ["*_backup"],
+        }
+
+        result = dumper._get_tables_to_dump(mock_conn, db_config)
+        assert len(result) == 2
+
+    def test_explicit_string_table_with_exclusion(self, dumper):
+        """Test explicit string table entries with exclusion."""
+        mock_conn = mock.MagicMock()
+        db_config = {
+            "tables": ["users", "tmp_data", "orders"],
+            "exclude_tables": ["tmp_*"],
+        }
+
+        result = dumper._get_tables_to_dump(mock_conn, db_config)
+        assert len(result) == 2
+
+
+class TestDumpSingleTable:
+    """Tests for _dump_single_table method."""
+
+    @pytest.fixture
+    def mock_config(self):
+        config = mock.MagicMock()
+        config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": True,
+            "timestamp_suffix": True,
+        }
+        config.get_defaults.return_value = {}
+        return config
+
+    def test_dump_single_table_separate_files(self, mock_config):
+        """Test dumping single table with separate files."""
+        mock_dumper = mock.MagicMock()
+        mock_dumper.dump_table.return_value = TableStats(
+            table="users", rows_dumped=10, success=True
+        )
+
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = dumper._dump_single_table(
+                mock_dumper, {"name": "users"}, db_config,
+                Path(tmpdir), OutputFormat.SQL, True, "20240101", is_first=True
+            )
+
+        assert result.table == "users"
+        assert result.rows_dumped == 10
+
+    def test_dump_single_table_string_config(self, mock_config):
+        """Test dumping table when config is a string."""
+        mock_dumper = mock.MagicMock()
+        mock_dumper.dump_table.return_value = TableStats(
+            table="users", rows_dumped=5, success=True
+        )
+
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = dumper._dump_single_table(
+                mock_dumper, "users", db_config,
+                Path(tmpdir), OutputFormat.SQL, True, "20240101", is_first=True
+            )
+
+        assert result.table == "users"
+
+    def test_dump_single_table_single_file_mode(self, mock_config):
+        """Test dumping single table in single-file mode."""
+        mock_dumper = mock.MagicMock()
+        mock_dumper.dump_table.return_value = TableStats(
+            table="users", rows_dumped=5, success=True
+        )
+
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+        }
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = dumper._dump_single_table(
+                mock_dumper, {"name": "users"}, db_config,
+                Path(tmpdir), OutputFormat.SQL, False, "20240101", is_first=True
+            )
+
+        assert result.table == "users"
+        # Verify dump_table called with append=False for first table
+        call_args = mock_dumper.dump_table.call_args
+        assert call_args.kwargs.get('append', call_args[1].get('append')) is False
+
+    def test_dump_single_table_single_file_append(self, mock_config):
+        """Test dumping second table in single-file mode (append)."""
+        mock_dumper = mock.MagicMock()
+        mock_dumper.dump_table.return_value = TableStats(
+            table="orders", rows_dumped=3, success=True
+        )
+
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+        }
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = dumper._dump_single_table(
+                mock_dumper, {"name": "orders"}, db_config,
+                Path(tmpdir), OutputFormat.SQL, False, "20240101", is_first=False
+            )
+
+        # Verify append=True for non-first table
+        call_args = mock_dumper.dump_table.call_args
+        assert call_args.kwargs.get('append', call_args[1].get('append')) is True
+
+    def test_dump_single_table_no_timestamp_suffix(self, mock_config):
+        """Test dumping table in single-file mode without timestamp suffix."""
+        mock_dumper = mock.MagicMock()
+        mock_dumper.dump_table.return_value = TableStats(
+            table="users", rows_dumped=5, success=True
+        )
+
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": False,
+        }
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = dumper._dump_single_table(
+                mock_dumper, {"name": "users"}, db_config,
+                Path(tmpdir), OutputFormat.SQL, False, "20240101", is_first=True
+            )
+
+        assert result.table == "users"
+
+
+class TestLogTableResult:
+    """Tests for _log_table_result method."""
+
+    @pytest.fixture
+    def dumper(self):
+        config = mock.MagicMock()
+        config.get_output_settings.return_value = {}
+        config.get_defaults.return_value = {}
+        return DatabaseDumper(config)
+
+    def test_log_successful_table(self, dumper, caplog):
+        """Test logging successful table dump."""
+        import logging
+        table_stats = TableStats(table="users", rows_dumped=100, success=True)
+
+        with caplog.at_level(logging.INFO):
+            dumper._log_table_result(table_stats, "testdb")
+
+        assert "users" in caplog.text
+        assert "100 rows" in caplog.text
+
+    def test_log_failed_table(self, dumper, caplog):
+        """Test logging failed table dump."""
+        import logging
+        table_stats = TableStats(
+            table="orders", success=False, error="Connection lost"
+        )
+
+        with caplog.at_level(logging.ERROR):
+            dumper._log_table_result(table_stats, "testdb")
+
+        assert "orders" in caplog.text
+        assert "Connection lost" in caplog.text
+        assert len(dumper.stats.errors) == 1
+        assert dumper.stats.errors[0]["database"] == "testdb"
+        assert dumper.stats.errors[0]["table"] == "orders"
