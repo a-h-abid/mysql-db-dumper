@@ -16,6 +16,29 @@ A configurable Python script to dump MySQL databases with support for multiple i
 - **Progress Tracking**: Real-time progress indicators for large table dumps
 - **Security Validation**: Automatic validation of passwords and configuration values
 
+## New Features 🎉
+
+### **Visual Progress Bars** 📊
+- Beautiful tqdm progress bars with ETA and speed indicators
+- Configurable via `progress_bar` setting
+
+### **Incremental Dumps** ⚡
+- Only dump rows modified since last dump
+- Use `--since updated_at` for timestamp-based filtering
+- Automatic metadata tracking in JSON file
+
+### **Parallel Dumping** 🚀
+- Dump multiple tables simultaneously
+- Use `--parallel --max-workers 8` for faster backups
+- Thread-safe with automatic connection management
+
+### **Integration Tests** ✅
+- Complete test suite with real MySQL in Docker
+- 8 comprehensive integration tests
+- CI/CD workflow integration
+
+**See [NEW_FEATURES.md](NEW_FEATURES.md) for detailed documentation and usage examples.**
+
 ## Recent Improvements
 
 ### Security
