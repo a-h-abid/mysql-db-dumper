@@ -33,6 +33,8 @@ class TestDatabaseConnection:
         """Test default constants."""
         assert DatabaseConnection.DEFAULT_PORT == 3306
         assert DatabaseConnection.DEFAULT_CHARSET == 'utf8mb4'
+        assert DatabaseConnection.DEFAULT_CONNECT_TIMEOUT == 30
+        assert DatabaseConnection.DEFAULT_READ_TIMEOUT == 300
 
     @mock.patch('src.connection.mysql.connector.connect')
     def test_connect(self, mock_connect):
@@ -56,7 +58,10 @@ class TestDatabaseConnection:
             password="secret",
             database="testdb",
             charset='utf8mb4',
-            use_unicode=True
+            use_unicode=True,
+            connection_timeout=30,
+            read_timeout=300,
+            autocommit=True
         )
         assert conn.connection == mock_connection
 

@@ -157,6 +157,7 @@ class TableDumper:
         rows_dumped = 0
         batch = []
         quoted_columns = ', '.join([f'`{col}`' for col in columns])
+        last_logged_rows = 0
 
         for row in cursor:
             batch.append(row)
@@ -165,6 +166,11 @@ class TableDumper:
             if len(batch) >= self.batch_size:
                 self._write_insert_batch(file_handle, table, quoted_columns, batch)
                 batch = []
+
+                # Log progress every 10,000 rows
+                if rows_dumped - last_logged_rows >= 10000:
+                    logging.info(f"  Progress: {rows_dumped:,} rows dumped from '{table}'")
+                    last_logged_rows = rows_dumped
 
         # Write remaining rows
         if batch:

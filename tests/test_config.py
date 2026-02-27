@@ -131,7 +131,14 @@ class TestConfigLoader:
 
     def test_empty_sections(self):
         """Test handling of missing config sections."""
-        config = {"instances": {"primary": {"host": "localhost"}}}
+        config = {
+            "instances": {
+                "primary": {
+                    "host": "localhost",
+                    "password": "testpass"  # Add password to pass validation
+                }
+            }
+        }
         with tempfile.NamedTemporaryFile(
             mode='w', suffix='.yaml', delete=False
         ) as f:
@@ -195,32 +202,37 @@ class TestEnvironmentVariables:
             assert output["directory"] == "/var/backups/dumps"
 
     def test_missing_env_var_becomes_empty(self, env_config_file):
-        """Test missing environment variables become empty strings."""
+        """Test missing environment variables cause validation error."""
         with mock.patch.dict(os.environ, {}, clear=True):
             # Clear any existing env vars that might match
             for key in ["DB_HOST", "DB_USER", "DB_PASSWORD", "OUTPUT_DIR"]:
                 os.environ.pop(key, None)
 
-            loader = ConfigLoader(env_config_file)
-            instance = loader.get_instance("primary")
-            assert instance["host"] == ""
-            assert instance["user"] == ""
-            assert instance["password"] == ""
+            # Should raise ValueError due to empty password
+            with pytest.raises(ValueError) as exc_info:
+                ConfigLoader(env_config_file)
+            assert "empty password" in str(exc_info.value).lower()
 
     def test_partial_env_var_resolution(self, env_config_file):
-        """Test partial environment variable resolution."""
+        """Test partial environment variable resolution causes validation error."""
         with mock.patch.dict(os.environ, {
             "DB_HOST": "localhost",
             "OUTPUT_DIR": "/data"
         }, clear=True):
-            loader = ConfigLoader(env_config_file)
-            instance = loader.get_instance("primary")
-            assert instance["host"] == "localhost"
-            assert instance["user"] == ""  # Not set
+            # Should raise ValueError due to empty password
+            with pytest.raises(ValueError) as exc_info:
+                ConfigLoader(env_config_file)
+            assert "empty password" in str(exc_info.value).lower()
 
     def test_env_var_in_nested_list(self):
         """Test env var resolution in nested lists."""
         config = {
+            "instances": {
+                "primary": {
+                    "host": "localhost",
+                    "password": "testpass"  # Add password
+                }
+            },
             "databases": [
                 {"name": "${DB_NAME}", "tables": ["${TABLE_1}", "${TABLE_2}"]}
             ]
@@ -252,7 +264,8 @@ class TestEnvironmentVariables:
                     "host": "localhost",
                     "port": 3306,
                     "ssl": True,
-                    "timeout": None
+                    "timeout": None,
+                    "password": "testpass"  # Add password
                 }
             }
         }
@@ -268,3 +281,74 @@ class TestEnvironmentVariables:
         assert instance["port"] == 3306
         assert instance["ssl"] is True
         assert instance["timeout"] is None
+
+
+class TestConfigValidation:
+    """Tests for configuration validation."""
+
+    def test_empty_password_raises_error(self):
+        """Test that empty password raises ValueError."""
+        config = {
+            "instances": {
+                "primary": {
+                    "host": "localhost",
+                    "password": ""
+                }
+            }
+        }
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.yaml', delete=False
+        ) as f:
+            yaml.dump(config, f)
+            f.flush()
+
+            with pytest.raises(ValueError) as exc_info:
+                ConfigLoader(f.name)
+            assert "empty password" in str(exc_info.value).lower()
+        os.unlink(f.name)
+
+    def test_invalid_port_raises_error(self):
+        """Test that invalid port number raises ValueError."""
+        config = {
+            "instances": {
+                "primary": {
+                    "host": "localhost",
+                    "port": 99999,
+                    "password": "testpass"
+                }
+            }
+        }
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.yaml', delete=False
+        ) as f:
+            yaml.dump(config, f)
+            f.flush()
+
+            with pytest.raises(ValueError) as exc_info:
+                ConfigLoader(f.name)
+            assert "invalid port" in str(exc_info.value).lower()
+        os.unlink(f.name)
+
+    def test_invalid_batch_size_raises_error(self):
+        """Test that invalid batch_size raises ValueError."""
+        config = {
+            "instances": {
+                "primary": {
+                    "host": "localhost",
+                    "password": "testpass"
+                }
+            },
+            "output": {
+                "batch_size": -10
+            }
+        }
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.yaml', delete=False
+        ) as f:
+            yaml.dump(config, f)
+            f.flush()
+
+            with pytest.raises(ValueError) as exc_info:
+                ConfigLoader(f.name)
+            assert "batch_size" in str(exc_info.value).lower()
+        os.unlink(f.name)
