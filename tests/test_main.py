@@ -88,6 +88,7 @@ class TestMainFunction:
                 with pytest.raises(SystemExit):
                     main()
                 # Check that logging was called with DEBUG level
+                mock_setup.assert_called_once()
                 call_args = mock_setup.call_args
                 assert call_args[0][0]['level'] == 'DEBUG'
 
