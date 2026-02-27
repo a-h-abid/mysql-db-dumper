@@ -5,6 +5,8 @@ Main database dumping orchestration for MySQL Database Dumper.
 import fnmatch
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -22,7 +24,9 @@ class DatabaseDumper:
         self,
         config: ConfigLoader,
         incremental_tracker=None,
-        timestamp_column: Optional[str] = None
+        timestamp_column: Optional[str] = None,
+        parallel: bool = False,
+        max_workers: int = 4
     ):
         self.config = config
         self.output_settings = config.get_output_settings()
@@ -30,6 +34,9 @@ class DatabaseDumper:
         self.stats = DumpStats()
         self.incremental_tracker = incremental_tracker
         self.timestamp_column = timestamp_column
+        self.parallel = parallel
+        self.max_workers = max_workers
+        self._stats_lock = threading.Lock()  # Thread-safe stats updates
 
     def _compile_exclusion_patterns(self, exclude_patterns: list[str]) -> list[re.Pattern]:
         """
@@ -173,10 +180,35 @@ class DatabaseDumper:
         tables_to_dump = self._get_tables_to_dump(conn, db_config)
         logging.info(f"Dumping {len(tables_to_dump)} table(s) from '{db_name}'")
 
-        # Create dumper and process tables
-        dumper = TableDumper(conn, self.output_settings)
         output_format = OutputFormat(self.output_settings.get('format', 'sql'))
-        separate_files = self.output_settings.get('separate_files', True)
+
+        # Choose sequential or parallel execution
+        if self.parallel and len(tables_to_dump) > 1 and separate_files:
+            self._dump_tables_parallel(
+                tables_to_dump, db_config, db_stats, db_output_dir,
+                output_format, timestamp, db_name
+            )
+        else:
+            # Sequential dump (original behavior)
+            self._dump_tables_sequential(
+                conn, tables_to_dump, db_config, db_stats, db_output_dir,
+                output_format, separate_files, timestamp, db_name
+            )
+
+    def _dump_tables_sequential(
+        self,
+        conn: DatabaseConnection,
+        tables_to_dump: list,
+        db_config: dict[str, Any],
+        db_stats: DatabaseStats,
+        db_output_dir: Path,
+        output_format: OutputFormat,
+        separate_files: bool,
+        timestamp: str,
+        db_name: str
+    ) -> None:
+        """Dump tables sequentially (original behavior)."""
+        dumper = TableDumper(conn, self.output_settings)
 
         for i, table_config in enumerate(tables_to_dump):
             table_stats = self._dump_single_table(
@@ -190,6 +222,69 @@ class DatabaseDumper:
             self.stats.total_rows += table_stats.rows_dumped
 
             self._log_table_result(table_stats, db_name)
+
+    def _dump_tables_parallel(
+        self,
+        tables_to_dump: list,
+        db_config: dict[str, Any],
+        db_stats: DatabaseStats,
+        db_output_dir: Path,
+        output_format: OutputFormat,
+        timestamp: str,
+        db_name: str
+    ) -> None:
+        """Dump tables in parallel using ThreadPoolExecutor."""
+        logging.info(f"Using parallel dumping with {self.max_workers} workers")
+
+        # Create connection config for workers
+        instance_name = db_config.get('instance', 'primary')
+        instance_config = self.config.get_instance(instance_name)
+
+        def dump_table_worker(table_config):
+            """Worker function to dump a single table."""
+            # Each worker gets its own connection
+            with DatabaseConnection(
+                host=instance_config['host'],
+                port=instance_config.get('port', DatabaseConnection.DEFAULT_PORT),
+                user=instance_config['user'],
+                password=instance_config['password'],
+                database=db_config['name']
+            ) as worker_conn:
+                dumper = TableDumper(worker_conn, self.output_settings)
+                return self._dump_single_table(
+                    dumper, table_config, db_config, db_output_dir,
+                    output_format, True, timestamp, is_first=False
+                )
+
+        # Execute parallel dumps
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_table = {
+                executor.submit(dump_table_worker, table_config): table_config
+                for table_config in tables_to_dump
+            }
+
+            for future in as_completed(future_to_table):
+                table_config = future_to_table[future]
+                try:
+                    table_stats = future.result()
+
+                    # Thread-safe stats updates
+                    with self._stats_lock:
+                        db_stats.tables.append(table_stats)
+                        db_stats.total_rows += table_stats.rows_dumped
+                        self.stats.total_tables += 1
+                        self.stats.total_rows += table_stats.rows_dumped
+
+                    self._log_table_result(table_stats, db_name)
+                except Exception as e:
+                    table_name = table_config.get('name', 'unknown') if isinstance(table_config, dict) else table_config
+                    logging.error(f"Error dumping table '{table_name}': {e}")
+                    with self._stats_lock:
+                        self.stats.errors.append({
+                            'database': db_name,
+                            'table': table_name,
+                            'error': str(e)
+                        })
 
     def _get_tables_to_dump(
         self,

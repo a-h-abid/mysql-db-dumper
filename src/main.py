@@ -61,6 +61,17 @@ def main():
         action='store_true',
         help='Clear incremental dump metadata and start fresh'
     )
+    parser.add_argument(
+        '--parallel',
+        action='store_true',
+        help='Enable parallel dumping of multiple tables'
+    )
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        default=4,
+        help='Maximum number of parallel workers (default: 4)'
+    )
 
     args = parser.parse_args()
 
@@ -112,7 +123,13 @@ def main():
 
     # Run dump
     try:
-        dumper = DatabaseDumper(config, incremental_tracker=tracker, timestamp_column=args.since)
+        dumper = DatabaseDumper(
+            config,
+            incremental_tracker=tracker,
+            timestamp_column=args.since,
+            parallel=args.parallel,
+            max_workers=args.max_workers
+        )
         stats = dumper.run(
             database_filter=args.database,
             instance_filter=args.instance
