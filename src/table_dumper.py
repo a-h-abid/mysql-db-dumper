@@ -7,7 +7,9 @@ import gzip
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, Optional
+
+from tqdm import tqdm
 
 from .connection import DatabaseConnection
 from .models import DumpSettings, OutputFormat, TableStats
@@ -23,6 +25,7 @@ class TableDumper:
         self.connection = connection
         self.output_settings = output_settings
         self.batch_size = output_settings.get('batch_size', self.DEFAULT_BATCH_SIZE)
+        self.use_progress_bar = output_settings.get('progress_bar', True)
 
         # Pre-build type formatters for faster dispatch
         self._type_formatters: dict[type, callable] = {
@@ -157,24 +160,41 @@ class TableDumper:
         rows_dumped = 0
         batch = []
         quoted_columns = ', '.join([f'`{col}`' for col in columns])
-        last_logged_rows = 0
 
-        for row in cursor:
-            batch.append(row)
-            rows_dumped += 1
+        # Create progress bar if enabled
+        pbar: Optional[tqdm] = None
+        if self.use_progress_bar:
+            pbar = tqdm(
+                desc=f"Dumping {table}",
+                unit=" rows",
+                unit_scale=True,
+                leave=False,
+                dynamic_ncols=True
+            )
 
-            if len(batch) >= self.batch_size:
-                self._write_insert_batch(file_handle, table, quoted_columns, batch)
-                batch = []
+        try:
+            for row in cursor:
+                batch.append(row)
+                rows_dumped += 1
 
-                # Log progress every 10,000 rows
-                if rows_dumped - last_logged_rows >= 10000:
+                if len(batch) >= self.batch_size:
+                    self._write_insert_batch(file_handle, table, quoted_columns, batch)
+                    batch = []
+                    if pbar:
+                        pbar.update(self.batch_size)
+
+                # Fallback to logging if progress bar disabled
+                if not self.use_progress_bar and rows_dumped % 10000 == 0:
                     logging.info(f"  Progress: {rows_dumped:,} rows dumped from '{table}'")
-                    last_logged_rows = rows_dumped
 
-        # Write remaining rows
-        if batch:
-            self._write_insert_batch(file_handle, table, quoted_columns, batch)
+            # Write remaining rows
+            if batch:
+                self._write_insert_batch(file_handle, table, quoted_columns, batch)
+                if pbar:
+                    pbar.update(len(batch))
+        finally:
+            if pbar:
+                pbar.close()
 
         cursor.close()
 
