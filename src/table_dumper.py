@@ -152,25 +152,26 @@ class TableDumper:
 
         # Write data
         cursor = self.connection.get_cursor()
-        cursor.execute(query)
+        try:
+            cursor.execute(query)
 
-        rows_dumped = 0
-        batch = []
-        quoted_columns = ', '.join([f'`{col}`' for col in columns])
+            rows_dumped = 0
+            batch = []
+            quoted_columns = ', '.join([f'`{col}`' for col in columns])
 
-        for row in cursor:
-            batch.append(row)
-            rows_dumped += 1
+            for row in cursor:
+                batch.append(row)
+                rows_dumped += 1
 
-            if len(batch) >= self.batch_size:
+                if len(batch) >= self.batch_size:
+                    self._write_insert_batch(file_handle, table, quoted_columns, batch)
+                    batch.clear()
+
+            # Write remaining rows
+            if batch:
                 self._write_insert_batch(file_handle, table, quoted_columns, batch)
-                batch = []
-
-        # Write remaining rows
-        if batch:
-            self._write_insert_batch(file_handle, table, quoted_columns, batch)
-
-        cursor.close()
+        finally:
+            cursor.close()
 
         file_handle.write(f"\n-- Dump complete. {rows_dumped} rows.\n")
         return rows_dumped
@@ -226,22 +227,24 @@ class TableDumper:
 
         # Write data in batches for better I/O performance
         cursor = self.connection.get_cursor()
-        cursor.execute(query)
+        try:
+            cursor.execute(query)
 
-        rows_dumped = 0
-        batch = []
+            rows_dumped = 0
+            batch = []
 
-        for row in cursor:
-            batch.append(row)
-            rows_dumped += 1
+            for row in cursor:
+                batch.append(row)
+                rows_dumped += 1
 
-            if len(batch) >= self.CSV_BATCH_SIZE:
+                if len(batch) >= self.CSV_BATCH_SIZE:
+                    writer.writerows(batch)
+                    batch.clear()
+
+            # Write remaining rows
+            if batch:
                 writer.writerows(batch)
-                batch = []
+        finally:
+            cursor.close()
 
-        # Write remaining rows
-        if batch:
-            writer.writerows(batch)
-
-        cursor.close()
         return rows_dumped

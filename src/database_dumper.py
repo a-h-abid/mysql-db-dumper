@@ -124,7 +124,13 @@ class DatabaseDumper:
                 port=instance_config.get('port', DatabaseConnection.DEFAULT_PORT),
                 user=instance_config['user'],
                 password=instance_config['password'],
-                database=db_name
+                database=db_name,
+                connect_timeout=instance_config.get(
+                    'connect_timeout', DatabaseConnection.DEFAULT_CONNECT_TIMEOUT
+                ),
+                read_timeout=instance_config.get(
+                    'read_timeout', DatabaseConnection.DEFAULT_READ_TIMEOUT
+                ),
             ) as conn:
                 self._process_database_tables(conn, db_config, db_stats, output_dir, timestamp)
 
