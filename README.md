@@ -2,6 +2,8 @@
 
 A configurable Python script to dump MySQL databases with support for multiple instances, row limits, custom ordering, and more.
 
+**Python 3.10+** | **99% Test Coverage** | **CI/CD Pipeline** | **Docker Support**
+
 ## Features
 
 - **Multiple Database Instances**: Connect to different MySQL servers
@@ -12,6 +14,9 @@ A configurable Python script to dump MySQL databases with support for multiple i
 - **Compression**: Optional gzip compression
 - **Environment Variables**: Secure password management via env vars
 - **Flexible Configuration**: YAML-based configuration file
+- **Connection Timeouts**: Configurable connection timeout (default 30s) for reliability
+- **Docker Support**: Multi-stage Dockerfile with security hardening
+- **CI/CD Pipeline**: Automated testing on Python 3.10–3.12 with integration tests
 
 ## Installation
 
@@ -22,6 +27,9 @@ source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Install development dependencies (for testing)
+pip install -r requirements-dev.txt
 ```
 
 ## Project Structure
@@ -325,13 +333,60 @@ databases:
     tables: "*"
 ```
 
-## Unit Tests
+## Testing
 
-Run unit tests using below command.
+### Unit Tests
+
+Run unit tests with coverage:
+
+```bash
+python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=95 -v
+```
+
+Or without coverage:
 
 ```bash
 python -m pytest tests/ -v
 ```
+
+### Integration Tests
+
+Integration tests run against a real MySQL 8.0 instance. Set the following environment variables before running:
+
+```bash
+export MYSQL_HOST=127.0.0.1
+export MYSQL_PORT=3306
+export MYSQL_USER=root
+export MYSQL_PASSWORD=test_password
+export MYSQL_DATABASE=test_db
+
+python -m pytest tests/integration/ -v
+```
+
+The CI/CD pipeline runs both unit tests (Python 3.10–3.12) and integration tests automatically on push and pull requests to the `main` branch.
+
+## Docker
+
+Docker support is available via the `docker/` directory, including a multi-stage Dockerfile and Docker Compose configuration.
+
+```bash
+# Build the image
+docker compose -f docker/docker-compose.yml build
+
+# Run the dumper
+docker compose -f docker/docker-compose.yml run --rm dumper --config /app/config.yaml
+
+# Run with a specific database
+docker compose -f docker/docker-compose.yml run --rm dumper --config /app/config.yaml --database mydb
+```
+
+The Docker image includes:
+- **Multi-stage build** for minimal image size
+- **Non-root user** (`dumper`, UID 1000) for security
+- **Read-only filesystem** and no privilege escalation
+- **Resource limits** for CPU and memory
+
+For full Docker documentation, see [docker/DOCKER.md](docker/DOCKER.md).
 
 ## License
 
