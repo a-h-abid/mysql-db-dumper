@@ -19,6 +19,7 @@ import yaml
 
 from .config import ConfigLoader
 from .database_dumper import DatabaseDumper
+from .incremental import IncrementalTracker
 from .utils import print_dry_run_info, setup_logging
 
 
@@ -50,6 +51,16 @@ def main():
         '-i', '--instance',
         help='Dump only databases from the specified instance'
     )
+    parser.add_argument(
+        '--since',
+        metavar='COLUMN',
+        help='Enable incremental dump based on timestamp column (e.g., "updated_at")'
+    )
+    parser.add_argument(
+        '--clear-metadata',
+        action='store_true',
+        help='Clear incremental dump metadata and start fresh'
+    )
 
     args = parser.parse_args()
 
@@ -69,6 +80,21 @@ def main():
         log_settings['level'] = 'DEBUG'
     setup_logging(log_settings)
 
+    # Handle incremental dump metadata
+    tracker = None
+    if args.since or args.clear_metadata:
+        metadata_file = config.get_output_settings().get('metadata_file', '.dump_metadata.json')
+        tracker = IncrementalTracker(metadata_file)
+
+        if args.clear_metadata:
+            tracker.clear_metadata(
+                database=args.database,
+                instance=args.instance
+            )
+            logging.info("Cleared incremental dump metadata")
+            if not args.since:
+                sys.exit(0)
+
     # Dry run mode
     if args.dry_run:
         logging.info("DRY RUN MODE - No data will be dumped")
@@ -86,7 +112,7 @@ def main():
 
     # Run dump
     try:
-        dumper = DatabaseDumper(config)
+        dumper = DatabaseDumper(config, incremental_tracker=tracker, timestamp_column=args.since)
         stats = dumper.run(
             database_filter=args.database,
             instance_filter=args.instance

@@ -18,11 +18,18 @@ from .table_dumper import TableDumper
 class DatabaseDumper:
     """Main class for database dumping operations."""
 
-    def __init__(self, config: ConfigLoader):
+    def __init__(
+        self,
+        config: ConfigLoader,
+        incremental_tracker=None,
+        timestamp_column: Optional[str] = None
+    ):
         self.config = config
         self.output_settings = config.get_output_settings()
         self.defaults = config.get_defaults()
         self.stats = DumpStats()
+        self.incremental_tracker = incremental_tracker
+        self.timestamp_column = timestamp_column
 
     def _compile_exclusion_patterns(self, exclude_patterns: list[str]) -> list[re.Pattern]:
         """
@@ -236,7 +243,19 @@ class DatabaseDumper:
             table_config = {'name': table_config}
 
         table_name = table_config['name']
+        db_name = db_config['name']
+        instance_name = db_config.get('instance', 'primary')
         settings = DumpSettings.from_configs(self.defaults, db_config, table_config)
+
+        # Apply incremental dump WHERE clause if enabled
+        if self.incremental_tracker and self.timestamp_column:
+            settings.where_clause = self.incremental_tracker.generate_incremental_where_clause(
+                database=db_name,
+                table=table_name,
+                timestamp_column=self.timestamp_column,
+                instance=instance_name,
+                existing_where=settings.where_clause
+            )
 
         logging.debug(
             f"Table '{table_name}' effective settings: "
@@ -250,20 +269,31 @@ class DatabaseDumper:
             append = False
         else:
             # Single file directly in output directory
-            db_name = db_config['name']
             if self.output_settings.get('timestamp_suffix', True):
                 output_path = db_output_dir / f"{db_name}_{timestamp}.{output_format.extension}"
             else:
                 output_path = db_output_dir / f"{db_name}.{output_format.extension}"
             append = not is_first
 
-        return dumper.dump_table(
+        table_stats = dumper.dump_table(
             table=table_name,
             output_path=output_path,
             settings=settings,
             output_format=output_format,
             append=append
         )
+
+        # Update incremental tracker on successful dump
+        if self.incremental_tracker and table_stats.success:
+            self.incremental_tracker.set_last_dump_time(
+                database=db_name,
+                table=table_name,
+                timestamp=datetime.now(),
+                instance=instance_name,
+                rows_dumped=table_stats.rows_dumped
+            )
+
+        return table_stats
 
     def _log_table_result(self, table_stats: TableStats, db_name: str) -> None:
         """Log the result of a table dump."""
