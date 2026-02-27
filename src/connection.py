@@ -17,7 +17,6 @@ class DatabaseConnection:
     DEFAULT_PORT = 3306
     DEFAULT_CHARSET = 'utf8mb4'
     DEFAULT_CONNECT_TIMEOUT = 30
-    DEFAULT_READ_TIMEOUT = 300
 
     def __init__(
         self,
@@ -27,7 +26,6 @@ class DatabaseConnection:
         password: str,
         database: Optional[str] = None,
         connect_timeout: int = DEFAULT_CONNECT_TIMEOUT,
-        read_timeout: int = DEFAULT_READ_TIMEOUT,
     ):
         self.host = host
         self.port = port
@@ -35,7 +33,6 @@ class DatabaseConnection:
         self.password = password
         self.database = database
         self.connect_timeout = connect_timeout
-        self.read_timeout = read_timeout
         self.connection = None
 
     def __enter__(self) -> "DatabaseConnection":

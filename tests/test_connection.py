@@ -313,19 +313,16 @@ class TestDatabaseConnection:
         )
 
     def test_init_with_custom_timeouts(self):
-        """Test connection initialization with custom timeouts."""
+        """Test connection initialization with custom timeout."""
         conn = DatabaseConnection(
             host="localhost",
             port=3306,
             user="root",
             password="secret",
             connect_timeout=60,
-            read_timeout=600,
         )
         assert conn.connect_timeout == 60
-        assert conn.read_timeout == 600
 
     def test_default_timeout_constants(self):
         """Test default timeout constants."""
         assert DatabaseConnection.DEFAULT_CONNECT_TIMEOUT == 30
-        assert DatabaseConnection.DEFAULT_READ_TIMEOUT == 300

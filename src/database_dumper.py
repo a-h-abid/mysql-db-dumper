@@ -128,9 +128,6 @@ class DatabaseDumper:
                 connect_timeout=instance_config.get(
                     'connect_timeout', DatabaseConnection.DEFAULT_CONNECT_TIMEOUT
                 ),
-                read_timeout=instance_config.get(
-                    'read_timeout', DatabaseConnection.DEFAULT_READ_TIMEOUT
-                ),
             ) as conn:
                 self._process_database_tables(conn, db_config, db_stats, output_dir, timestamp)
 
