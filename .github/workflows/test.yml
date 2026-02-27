@@ -32,7 +32,42 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=xml
+          python -m pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=xml --ignore=tests/integration
+
+  integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install pytest
+
+      - name: Start MySQL container
+        run: |
+          docker-compose -f docker-compose.test.yml up -d
+          sleep 10
+          docker-compose -f docker-compose.test.yml exec -T mysql-test mysqladmin ping -h localhost -u root -ptestpassword --wait=30
+
+      - name: Run integration tests
+        run: |
+          python -m pytest tests/integration/ -v
+
+      - name: Stop MySQL container
+        if: always()
+        run: |
+          docker-compose -f docker-compose.test.yml down -v
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
