@@ -48,6 +48,44 @@ class TestMainConfigErrors:
 
             mock_sys.exit.assert_called_once_with(1)
 
+    def test_invalid_config_value_exits_1(self):
+        """Test sys.exit(1) when ConfigLoader raises ValueError (bad config values)."""
+        with mock.patch.object(main_module, 'argparse') as mock_argparse, \
+             mock.patch.object(main_module, 'ConfigLoader', side_effect=ValueError("bad config")), \
+             mock.patch.object(main_module, 'sys') as mock_sys:
+            mock_args = mock.MagicMock()
+            mock_args.config = 'config.yaml'
+            mock_argparse.ArgumentParser.return_value.parse_args.return_value = mock_args
+            mock_sys.exit.side_effect = SystemExit(1)
+
+            with pytest.raises(SystemExit) as exc_info:
+                main_func()
+
+            assert exc_info.value.code == 1
+            mock_sys.exit.assert_called_once_with(1)
+
+    def test_invalid_logging_level_exits_1(self):
+        """Test sys.exit(1) when setup_logging raises ValueError (invalid log level)."""
+        mock_config = mock.MagicMock()
+        mock_config.get_logging_settings.return_value = {'level': 'INVALID'}
+
+        with mock.patch.object(main_module, 'argparse') as mock_argparse, \
+             mock.patch.object(main_module, 'ConfigLoader', return_value=mock_config), \
+             mock.patch.object(main_module, 'setup_logging',
+                               side_effect=ValueError("Invalid logging level 'INVALID'")), \
+             mock.patch.object(main_module, 'sys') as mock_sys:
+            mock_args = mock.MagicMock()
+            mock_args.config = 'config.yaml'
+            mock_args.verbose = False
+            mock_argparse.ArgumentParser.return_value.parse_args.return_value = mock_args
+            mock_sys.exit.side_effect = SystemExit(1)
+
+            with pytest.raises(SystemExit) as exc_info:
+                main_func()
+
+            assert exc_info.value.code == 1
+            mock_sys.exit.assert_called_once_with(1)
+
 
 class TestMainVerbose:
     """Tests for verbose flag handling."""

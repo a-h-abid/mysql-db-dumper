@@ -12,7 +12,13 @@ from .models import DumpSettings
 
 def setup_logging(log_settings: dict[str, Any]) -> None:
     """Setup logging configuration."""
-    log_level = getattr(logging, log_settings.get('level', 'INFO').upper())
+    level_name = log_settings.get('level', 'INFO').upper()
+    log_level = getattr(logging, level_name, None)
+    if not isinstance(log_level, int):
+        raise ValueError(
+            f"Invalid logging level '{level_name}'. "
+            f"Use one of DEBUG, INFO, WARNING, ERROR, CRITICAL."
+        )
     log_file = log_settings.get('file')
 
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
@@ -33,7 +39,8 @@ def setup_logging(log_settings: dict[str, Any]) -> None:
 def print_dry_run_info(databases: list[dict[str, Any]], defaults: dict[str, Any]) -> None:
     """Print information about what would be dumped in dry-run mode."""
     for db in databases:
-        logging.info(f"Would dump database: {db['name']} from instance: {db.get('instance', 'primary')}")
+        db_name = db.get('name') or '<unnamed>'
+        logging.info(f"Would dump database: {db_name} from instance: {db.get('instance', 'primary')}")
 
         db_row_limit = db.get('row_limit')
         if db_row_limit is not None:

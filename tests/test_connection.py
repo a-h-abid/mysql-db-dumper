@@ -326,3 +326,22 @@ class TestDatabaseConnection:
     def test_default_timeout_constants(self):
         """Test default timeout constants."""
         assert DatabaseConnection.DEFAULT_CONNECT_TIMEOUT == 30
+
+    @mock.patch('src.connection.mysql.connector.connect')
+    def test_start_consistent_snapshot(self, mock_connect):
+        """Snapshot helper issues REPEATABLE READ + START TRANSACTION."""
+        mock_cursor = mock.MagicMock()
+        mock_connection = mock.MagicMock()
+        mock_connection.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_connection
+
+        conn = DatabaseConnection(
+            host="localhost", port=3306, user="root", password="secret"
+        )
+        conn.connect()
+        conn.start_consistent_snapshot()
+
+        executed = [call.args[0] for call in mock_cursor.execute.call_args_list]
+        assert "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ" in executed
+        assert "START TRANSACTION WITH CONSISTENT SNAPSHOT" in executed
+        mock_cursor.close.assert_called_once()

@@ -15,6 +15,11 @@ from .models import DatabaseStats, DumpSettings, DumpStats, OutputFormat, TableS
 from .table_dumper import TableDumper
 
 
+def _safe_path_component(name: str) -> str:
+    """Reduce a name to a single safe filesystem component (strips any path/traversal)."""
+    return Path(str(name)).name
+
+
 class DatabaseDumper:
     """Main class for database dumping operations."""
 
@@ -93,7 +98,7 @@ class DatabaseDumper:
         databases = self.config.get_databases()
 
         if database_filter:
-            databases = [db for db in databases if db['name'] == database_filter]
+            databases = [db for db in databases if db.get('name') == database_filter]
             if not databases:
                 logging.warning(f"No database named '{database_filter}' found in configuration")
 
@@ -111,7 +116,15 @@ class DatabaseDumper:
         timestamp: str
     ) -> None:
         """Dump a single database."""
-        db_name = db_config['name']
+        db_name = db_config.get('name')
+        if not db_name:
+            logging.error("Skipping database entry with no 'name' field")
+            self.stats.errors.append({
+                'database': None,
+                'table': None,
+                'error': "Database entry is missing the required 'name' field",
+            })
+            return
         instance_name = db_config.get('instance', 'primary')
 
         db_stats = DatabaseStats(name=db_name, instance=instance_name)
@@ -129,6 +142,8 @@ class DatabaseDumper:
                     'connect_timeout', DatabaseConnection.DEFAULT_CONNECT_TIMEOUT
                 ),
             ) as conn:
+                if instance_config.get('consistent_snapshot', True):
+                    conn.start_consistent_snapshot()
                 self._process_database_tables(conn, db_config, db_stats, output_dir, timestamp)
 
         except Exception as e:
@@ -154,11 +169,12 @@ class DatabaseDumper:
         separate_files = self.output_settings.get('separate_files', True)
 
         # Create output subdirectory only for separate_files mode
+        safe_db = _safe_path_component(db_name)
         if separate_files:
             if self.output_settings.get('timestamp_suffix', True):
-                db_output_dir = output_dir / f"{db_name}_{timestamp}"
+                db_output_dir = output_dir / f"{safe_db}_{timestamp}"
             else:
-                db_output_dir = output_dir / db_name
+                db_output_dir = output_dir / safe_db
             db_output_dir.mkdir(parents=True, exist_ok=True)
         else:
             # Single file mode: use output_dir directly
@@ -194,6 +210,8 @@ class DatabaseDumper:
     ) -> list[dict[str, Any]]:
         """Get list of tables to dump, applying exclusion patterns."""
         tables_config = db_config.get('tables', '*')
+        if tables_config is None:
+            tables_config = '*'
         exclude_patterns = db_config.get('exclude_tables', [])
         compiled_patterns = self._compile_exclusion_patterns(exclude_patterns) if exclude_patterns else None
 
@@ -249,15 +267,15 @@ class DatabaseDumper:
 
         # Determine output file path
         if separate_files:
-            output_path = db_output_dir / f"{table_name}.{output_format.extension}"
+            output_path = db_output_dir / f"{_safe_path_component(table_name)}.{output_format.extension}"
             append = False
         else:
             # Single file directly in output directory
-            db_name = db_config['name']
+            safe_db = _safe_path_component(db_config['name'])
             if self.output_settings.get('timestamp_suffix', True):
-                output_path = db_output_dir / f"{db_name}_{timestamp}.{output_format.extension}"
+                output_path = db_output_dir / f"{safe_db}_{timestamp}.{output_format.extension}"
             else:
-                output_path = db_output_dir / f"{db_name}.{output_format.extension}"
+                output_path = db_output_dir / f"{safe_db}.{output_format.extension}"
             append = not is_first
 
         return dumper.dump_table(

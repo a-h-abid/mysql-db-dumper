@@ -8,7 +8,7 @@ from typing import Optional, Any
 import mysql.connector
 from mysql.connector import Error as MySQLError
 
-from .models import ColumnInfo
+from .models import ColumnInfo, coerce_optional_int
 
 
 class DatabaseConnection:
@@ -28,11 +28,11 @@ class DatabaseConnection:
         connect_timeout: int = DEFAULT_CONNECT_TIMEOUT,
     ):
         self.host = host
-        self.port = port
+        self.port = coerce_optional_int(port, 'port')
         self.user = user
         self.password = password
         self.database = database
-        self.connect_timeout = connect_timeout
+        self.connect_timeout = coerce_optional_int(connect_timeout, 'connect_timeout')
         self.connection = None
 
     def __enter__(self) -> "DatabaseConnection":
@@ -67,6 +67,20 @@ class DatabaseConnection:
         if self.connection and self.connection.is_connected():
             self.connection.close()
             logging.debug("Database connection closed")
+
+    def start_consistent_snapshot(self) -> None:
+        """Begin a REPEATABLE READ transaction with a consistent snapshot.
+
+        Gives every table in the dump the same point-in-time view, matching
+        `mysqldump --single-transaction`. InnoDB only.
+        """
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+            logging.debug("Started consistent-snapshot transaction")
+        finally:
+            cursor.close()
 
     def execute_query(self, query: str, params: Optional[tuple] = None) -> list[tuple]:
         """Execute a query and return results."""

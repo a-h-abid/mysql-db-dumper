@@ -197,6 +197,20 @@ class TestFilterDatabases:
         # Both should match since default is 'primary'
         assert len(result) == 2
 
+    def test_nameless_entry_does_not_crash_database_filter(self):
+        """A DB entry missing 'name' must not KeyError when --database filtering."""
+        config = mock.MagicMock()
+        config.get_databases.return_value = [
+            {"instance": "primary"},            # nameless — must be tolerated
+            {"name": "db1", "instance": "primary"},
+        ]
+        config.get_output_settings.return_value = {}
+        config.get_defaults.return_value = {}
+        dumper = DatabaseDumper(config)
+        result = dumper._filter_databases("db1", None)
+        assert len(result) == 1
+        assert result[0]["name"] == "db1"
+
 
 class TestDatabaseDumperInit:
     """Tests for DatabaseDumper initialization."""
@@ -343,6 +357,58 @@ class TestDumpDatabase:
         assert dumper.stats.errors[0]["database"] == "testdb"
         assert dumper.stats.errors[0]["table"] is None
         assert len(dumper.stats.databases) == 1
+
+    @mock.patch('src.database_dumper.DatabaseConnection')
+    def test_consistent_snapshot_on_by_default(self, mock_conn_class, mock_config):
+        """With no config flag, a consistent-snapshot txn is started."""
+        mock_conn = mock.MagicMock()
+        mock_conn.__enter__ = mock.MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = mock.MagicMock(return_value=False)
+        mock_conn.get_tables.return_value = []
+        mock_conn_class.return_value = mock_conn
+
+        dumper = DatabaseDumper(mock_config)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._dump_database(
+                {"name": "testdb", "instance": "primary", "tables": "*"},
+                Path(tmpdir), "20240101_120000"
+            )
+
+        mock_conn.start_consistent_snapshot.assert_called_once()
+
+    @mock.patch('src.database_dumper.DatabaseConnection')
+    def test_consistent_snapshot_skipped_when_disabled(self, mock_conn_class, mock_config):
+        """consistent_snapshot: false skips the transaction (e.g. MyISAM)."""
+        mock_config.get_instance.return_value = {
+            "host": "localhost", "port": 3306, "user": "root",
+            "password": "secret", "consistent_snapshot": False,
+        }
+        mock_conn = mock.MagicMock()
+        mock_conn.__enter__ = mock.MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = mock.MagicMock(return_value=False)
+        mock_conn.get_tables.return_value = []
+        mock_conn_class.return_value = mock_conn
+
+        dumper = DatabaseDumper(mock_config)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._dump_database(
+                {"name": "testdb", "instance": "primary", "tables": "*"},
+                Path(tmpdir), "20240101_120000"
+            )
+
+        mock_conn.start_consistent_snapshot.assert_not_called()
+
+    @mock.patch('src.database_dumper.DatabaseConnection')
+    def test_missing_name_records_error_and_continues(self, mock_conn_class, mock_config):
+        """A database entry with no name is skipped (no connection), error recorded."""
+        dumper = DatabaseDumper(mock_config)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._dump_database(
+                {"instance": "primary", "tables": "*"}, Path(tmpdir), "20240101_120000"
+            )
+        assert len(dumper.stats.errors) == 1
+        assert "name" in dumper.stats.errors[0]["error"]
+        mock_conn_class.assert_not_called()
 
 
 class TestProcessDatabaseTables:
@@ -510,6 +576,13 @@ class TestGetTablesToDump:
         result = dumper._get_tables_to_dump(mock_conn, db_config)
         assert len(result) == 2
 
+    def test_tables_null_treated_as_all(self, dumper):
+        """tables: null means 'all tables', not a crash."""
+        mock_conn = mock.MagicMock()
+        mock_conn.get_tables.return_value = ["users", "orders"]
+        result = dumper._get_tables_to_dump(mock_conn, {"tables": None})
+        assert result == [{"name": "users"}, {"name": "orders"}]
+
 
 class TestDumpSingleTable:
     """Tests for _dump_single_table method."""
@@ -635,6 +708,42 @@ class TestDumpSingleTable:
             )
 
         assert result.table == "users"
+
+    def test_table_name_path_traversal_sanitized(self, mock_config):
+        """A table name with .. must not escape the output directory."""
+        mock_dumper = mock.MagicMock()
+        mock_dumper.dump_table.return_value = TableStats(
+            table="x", rows_dumped=1, success=True
+        )
+        dumper = DatabaseDumper(mock_config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._dump_single_table(
+                mock_dumper, {"name": "../../evil"}, {"name": "db"},
+                Path(tmpdir), OutputFormat.SQL, True, "20240101", is_first=True
+            )
+
+        out = Path(mock_dumper.dump_table.call_args.kwargs["output_path"])
+        assert ".." not in out.parts
+        assert out.name == "evil.sql"
+
+    def test_db_name_path_traversal_sanitized_single_file(self, mock_config):
+        """A db name with .. must not escape the output directory in single-file mode."""
+        mock_dumper = mock.MagicMock()
+        mock_dumper.dump_table.return_value = TableStats(
+            table="x", rows_dumped=1, success=True
+        )
+        dumper = DatabaseDumper(mock_config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._dump_single_table(
+                mock_dumper, {"name": "users"}, {"name": "../../evil"},
+                Path(tmpdir), OutputFormat.SQL, False, "20240101", is_first=True
+            )
+
+        out = Path(mock_dumper.dump_table.call_args.kwargs["output_path"])
+        assert ".." not in out.parts
+        assert out.name.startswith("evil")
 
 
 class TestLogTableResult:

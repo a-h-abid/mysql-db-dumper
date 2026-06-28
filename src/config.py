@@ -30,8 +30,12 @@ class ConfigLoader:
         if isinstance(obj, str):
             matches = self.ENV_VAR_PATTERN.findall(obj)
             for match in matches:
-                env_value = os.environ.get(match, '')
-                obj = obj.replace(f'${{{match}}}', env_value)
+                if match not in os.environ:
+                    raise ValueError(
+                        f"Environment variable '{match}' referenced in "
+                        f"configuration is not set"
+                    )
+                obj = obj.replace(f'${{{match}}}', os.environ[match])
             return obj
         elif isinstance(obj, dict):
             return {k: self._resolve_env_vars(v) for k, v in obj.items()}

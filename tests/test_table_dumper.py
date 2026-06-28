@@ -99,6 +99,15 @@ class TestBuildSelectQuery:
         query = dumper._build_select_query("users", ["id", "name"], settings)
         assert "LIMIT 0" in query
 
+    def test_negative_row_limit_warns_and_is_unlimited(self, dumper, caplog):
+        """A negative row_limit emits no LIMIT and warns the user."""
+        import logging
+        caplog.set_level(logging.WARNING)
+        settings = DumpSettings(row_limit=-5)
+        query = dumper._build_select_query("users", ["id"], settings)
+        assert "LIMIT" not in query
+        assert "negative row_limit" in caplog.text
+
     def test_query_with_all_options(self, dumper):
         """Test query with all options."""
         settings = DumpSettings(
@@ -127,6 +136,15 @@ class TestBuildSelectQuery:
         assert "ORDER BY" not in query
         assert "order_direction" in caplog.text
         assert "order_by" in caplog.text
+
+    def test_invalid_order_direction_defaults_to_asc(self, dumper, caplog):
+        """An invalid order_direction is rejected and falls back to ASC."""
+        import logging
+        caplog.set_level(logging.WARNING)
+        settings = DumpSettings(order_by="id", order_direction="SIDEWAYS")
+        query = dumper._build_select_query("users", ["id", "name"], settings)
+        assert "ORDER BY `id` ASC" in query
+        assert "invalid order_direction" in caplog.text
 
     def test_column_quoting(self, dumper):
         """Test that column names are properly quoted."""
@@ -200,49 +218,44 @@ class TestOpenOutputFile:
         return TableDumper(mock_conn, {"compress": True})
 
     def test_open_without_compression(self, dumper_no_compress):
-        """Test opening file without compression."""
+        """Non-append writes go to a .partial temp file; final is the plain path."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "test.sql"
-            result_path, handle = dumper_no_compress._open_output_file(
+            final, write_path, handle = dumper_no_compress._open_output_file(
                 output_path, append=False
             )
             handle.close()
 
-            assert result_path == output_path
-            assert not str(result_path).endswith('.gz')
+            assert final == output_path
+            assert write_path == Path(str(output_path) + ".partial")
+            assert not str(final).endswith(".gz")
 
     def test_open_with_compression(self, dumper_with_compress):
-        """Test opening file with compression."""
+        """Compression adds .gz to final, and the temp file is .gz.partial."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "test.sql"
-            result_path, handle = dumper_with_compress._open_output_file(
+            final, write_path, handle = dumper_with_compress._open_output_file(
                 output_path, append=False
             )
             handle.close()
 
-            assert str(result_path).endswith('.gz')
-            assert result_path == Path(str(output_path) + '.gz')
+            assert str(final).endswith(".gz")
+            assert final == Path(str(output_path) + ".gz")
+            assert write_path == Path(str(output_path) + ".gz.partial")
 
     def test_open_append_mode(self, dumper_no_compress):
-        """Test opening file in append mode."""
+        """Append mode targets the final file directly (no .partial)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "test.sql"
+            output_path.write_text("initial")  # simulate an existing single-file dump
 
-            # Write initial content
-            result_path, handle = dumper_no_compress._open_output_file(
-                output_path, append=False
-            )
-            handle.write("initial")
-            handle.close()
-
-            # Append more content
-            result_path, handle = dumper_no_compress._open_output_file(
+            final, write_path, handle = dumper_no_compress._open_output_file(
                 output_path, append=True
             )
             handle.write("appended")
             handle.close()
 
-            # Verify content
+            assert write_path == final == output_path
             content = output_path.read_text()
             assert "initial" in content
             assert "appended" in content
@@ -323,6 +336,42 @@ class TestDumpTable:
             assert "INSERT INTO `users`" in content
             assert "CREATE TABLE" in content
             assert "DROP TABLE IF EXISTS" in content
+
+    def test_partial_dump_omits_drop_table(self, mock_connection):
+        """A row_limited dump must NOT emit DROP TABLE (restore would destroy data)."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([(1, "Alice")]))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+            settings = DumpSettings(row_limit=10)  # partial -> unsafe to recreate
+
+            stats = dumper.dump_table("users", output_path, settings, OutputFormat.SQL)
+
+            content = output_path.read_text()
+            assert stats.success is True
+            assert "DROP TABLE" not in content
+            assert "CREATE TABLE" in content
+
+    def test_failed_dump_leaves_no_final_file(self, mock_connection):
+        """If the dump dies mid-write, the final path must not exist; .partial remains."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.execute.side_effect = Exception("connection dropped")
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+
+            stats = dumper.dump_table("users", output_path, DumpSettings(), OutputFormat.SQL)
+
+            assert stats.success is False
+            assert not output_path.exists()
+            assert Path(str(output_path) + ".partial").exists()
 
     def test_dump_table_csv_with_data(self, mock_connection):
         """Test dumping table as CSV with actual data."""
@@ -415,6 +464,48 @@ class TestDumpTable:
             assert stats.success is True
             assert stats.file_path.endswith('.gz')
 
+    def test_where_clause_not_logged_at_info(self, mock_connection, caplog):
+        """The WHERE predicate must not appear in INFO logs (possible PII)."""
+        import logging
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([]))
+        mock_connection.get_cursor.return_value = mock_cursor
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir, caplog.at_level(logging.INFO):
+            dumper.dump_table(
+                "users", Path(tmpdir) / "t.sql",
+                DumpSettings(where_clause="ssn = '123-45-6789'"),
+                OutputFormat.SQL,
+            )
+
+        info_messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        assert info_messages  # the "Dumping table" line is present
+        assert not any("123-45-6789" in m for m in info_messages)
+
+    def test_generated_columns_excluded(self, mock_connection):
+        """Generated columns must be excluded from SELECT and INSERT (restore-breaking)."""
+        mock_connection.get_table_columns.return_value = [
+            ColumnInfo("id", "int", "NO", "PRI", None, "auto_increment"),
+            ColumnInfo("full_name", "varchar(255)", "YES", "", None, "STORED GENERATED"),
+            ColumnInfo("email", "varchar(255)", "YES", "", None, ""),
+        ]
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([(1, "a@b.com")]))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "t.sql"
+            stats = dumper.dump_table("users", output_path, DumpSettings(), OutputFormat.SQL)
+
+            content = output_path.read_text()
+            assert stats.success is True
+            assert "`full_name`" not in content
+            assert "`id`" in content
+            assert "`email`" in content
+
 
 class TestFormatSqlValue:
     """Tests for _format_sql_value method."""
@@ -463,6 +554,43 @@ class TestFormatSqlValue:
         dt = datetime(2024, 6, 15, 12, 30, 0)
         result = dumper._format_sql_value(dt)
         assert result == "'2024-06-15 12:30:00'"
+
+    def test_format_datetime_preserves_microseconds(self, dumper):
+        """Microseconds must not be silently dropped."""
+        dt = datetime(2024, 1, 15, 10, 30, 45, 123456)
+        assert dumper._format_sql_value(dt) == "'2024-01-15 10:30:45.123456'"
+
+    def test_format_string_with_null_byte(self, dumper):
+        """NUL byte must be escaped as \\0, not emitted raw."""
+        assert dumper._format_sql_value("a\x00b") == "'a\\0b'"
+
+    def test_format_string_with_ctrl_z(self, dumper):
+        """Ctrl-Z must be escaped as \\Z."""
+        assert dumper._format_sql_value("a\x1ab") == "'a\\Zb'"
+
+    def test_format_bytearray_as_hex(self, dumper):
+        """bytearray must serialize as a hex literal like bytes."""
+        assert dumper._format_sql_value(bytearray(b"\x00\xff")) == "X'00ff'"
+
+    def test_format_decimal_unquoted(self, dumper):
+        """Decimal must be an unquoted numeric literal."""
+        from decimal import Decimal
+        assert dumper._format_sql_value(Decimal("1.50")) == "1.50"
+
+    def test_format_date(self, dumper):
+        """date must serialize as a quoted ISO date."""
+        from datetime import date
+        assert dumper._format_sql_value(date(2024, 1, 15)) == "'2024-01-15'"
+
+    def test_format_time(self, dumper):
+        """time must serialize as a quoted ISO time."""
+        from datetime import time
+        assert dumper._format_sql_value(time(10, 30, 45)) == "'10:30:45'"
+
+    def test_format_timedelta(self, dumper):
+        """timedelta (MySQL TIME) must serialize as 'HH:MM:SS'."""
+        from datetime import timedelta
+        assert dumper._format_sql_value(timedelta(hours=10, minutes=30, seconds=45)) == "'10:30:45'"
 
 
 class TestWriteInsertBatch:

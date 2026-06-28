@@ -62,12 +62,19 @@ def main():
     except yaml.YAMLError as e:
         print(f"Error: Invalid YAML in configuration file: {e}")
         sys.exit(1)
+    except ValueError as e:
+        print(f"Error: Invalid configuration: {e}")
+        sys.exit(1)
 
     # Setup logging
     log_settings = config.get_logging_settings()
     if args.verbose:
         log_settings['level'] = 'DEBUG'
-    setup_logging(log_settings)
+    try:
+        setup_logging(log_settings)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
     # Dry run mode
     if args.dry_run:
@@ -77,7 +84,7 @@ def main():
 
         # Apply filters for dry run as well
         if args.database:
-            databases = [db for db in databases if db['name'] == args.database]
+            databases = [db for db in databases if db.get('name') == args.database]
         if args.instance:
             databases = [db for db in databases if db.get('instance', 'primary') == args.instance]
 

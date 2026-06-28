@@ -63,6 +63,13 @@ class TestSetupLogging:
             # Directory should be created
             assert log_file.parent.exists()
 
+    def test_invalid_log_level_raises(self):
+        import pytest
+        from src.utils import setup_logging
+        with pytest.raises(ValueError) as exc_info:
+            setup_logging({"level": "TRACE"})
+        assert "Invalid logging level" in str(exc_info.value)
+
 
 class TestFormatSettingsDisplay:
     """Tests for format_settings_display function."""

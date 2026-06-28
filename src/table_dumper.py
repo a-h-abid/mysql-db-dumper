@@ -5,12 +5,26 @@ Table dumping functionality for MySQL Database Dumper.
 import csv
 import gzip
 import logging
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, TextIO
 
 from .connection import DatabaseConnection
-from .models import DumpSettings, OutputFormat, TableStats
+from .models import DumpSettings, OrderDirection, OutputFormat, TableStats, coerce_optional_int
+
+
+def _format_timedelta(value: timedelta) -> str:
+    """Format a timedelta as a MySQL TIME literal '[-]HH:MM:SS[.ffffff]'."""
+    sign = '-' if value < timedelta(0) else ''
+    value = abs(value)
+    total_seconds = value.days * 86400 + value.seconds
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
+    out = f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}"
+    if value.microseconds:
+        out += f".{value.microseconds:06d}"
+    return f"'{out}'"
 
 
 class TableDumper:
@@ -22,7 +36,9 @@ class TableDumper:
     def __init__(self, connection: DatabaseConnection, output_settings: dict[str, Any]):
         self.connection = connection
         self.output_settings = output_settings
-        self.batch_size = output_settings.get('batch_size', self.DEFAULT_BATCH_SIZE)
+        self.batch_size = coerce_optional_int(
+            output_settings.get('batch_size'), 'batch_size'
+        ) or self.DEFAULT_BATCH_SIZE
 
         # Pre-build type formatters for faster dispatch
         self._type_formatters: dict[type, callable] = {
@@ -30,8 +46,13 @@ class TableDumper:
             bool: lambda v: '1' if v else '0',
             int: str,
             float: str,
+            Decimal: str,
             bytes: lambda v: f"X'{v.hex()}'",
-            datetime: lambda v: f"'{v.strftime('%Y-%m-%d %H:%M:%S')}'",
+            bytearray: lambda v: f"X'{v.hex()}'",
+            datetime: lambda v: f"'{v.isoformat(' ')}'",
+            date: lambda v: f"'{v.isoformat()}'",
+            time: lambda v: f"'{v.isoformat()}'",
+            timedelta: _format_timedelta,
         }
 
     def dump_table(
@@ -59,18 +80,35 @@ class TableDumper:
 
         try:
             columns = self.connection.get_table_columns(table)
-            column_names = [col.name for col in columns]
+            # Generated columns cannot be inserted; including them breaks restore.
+            column_names = [
+                col.name for col in columns
+                if 'GENERATED' not in (col.extra or '').upper()
+            ]
 
             query = self._build_select_query(table, column_names, settings)
-            logging.info(f"Dumping table '{table}' with query: {query[:200]}...")
+            logging.info(f"Dumping table '{table}'")
+            logging.debug(f"Query for '{table}': {query}")
 
-            output_path, file_handle = self._open_output_file(output_path, append)
-            stats.file_path = str(output_path)
+            # A dump that contains only a subset of rows must NOT recreate the table on
+            # restore: doing so would DROP the live table and replace it with the subset.
+            # Only a full, unfiltered dump may emit DROP TABLE.
+            full_table = settings.row_limit is None and not settings.where_clause
+            add_drop_table = self.output_settings.get('add_drop_table', full_table)
+            if add_drop_table and not full_table:
+                logging.warning(
+                    f"Refusing to emit DROP TABLE for partial dump of '{table}' "
+                    f"(row_limit/where_clause set); restoring it would destroy data."
+                )
+                add_drop_table = False
+
+            final_path, write_path, file_handle = self._open_output_file(output_path, append)
+            stats.file_path = str(final_path)
 
             try:
                 if output_format == OutputFormat.SQL:
                     stats.rows_dumped = self._dump_as_sql(
-                        file_handle, table, column_names, query
+                        file_handle, table, column_names, query, add_drop_table
                     )
                 elif output_format == OutputFormat.CSV:
                     stats.rows_dumped = self._dump_as_csv(
@@ -78,10 +116,14 @@ class TableDumper:
                     )
                 else:
                     raise ValueError(f"Unsupported output format: {output_format}")
-
-                stats.success = True
             finally:
                 file_handle.close()
+
+            # Atomic publish: only expose a fully-written dump at the final path.
+            if write_path != final_path:
+                Path(write_path).replace(final_path)
+
+            stats.success = True
 
         except Exception as e:
             stats.error = str(e)
@@ -89,17 +131,30 @@ class TableDumper:
 
         return stats
 
-    def _open_output_file(self, output_path: Path, append: bool) -> tuple[Path, TextIO]:
-        """Open output file with optional compression."""
-        file_mode = 'at' if append else 'wt'
+    def _open_output_file(self, output_path: Path, append: bool) -> tuple[Path, Path, TextIO]:
+        """Open output file with optional compression.
 
-        if self.output_settings.get('compress', False):
-            output_path = Path(str(output_path) + '.gz')
-            file_handle = gzip.open(output_path, file_mode, encoding='utf-8')
+        Returns (final_path, write_path, handle). For non-append writes, write_path is a
+        temporary '.partial' file the caller atomically renames to final_path on success,
+        so an interrupted dump never leaves a truncated file at final_path. Append mode
+        targets final_path directly (a shared single-file dump cannot be rebuilt per table).
+        """
+        compress = self.output_settings.get('compress', False)
+        final_path = Path(str(output_path) + '.gz') if compress else output_path
+
+        if append:
+            write_path = final_path
+            file_mode = 'at'
         else:
-            file_handle = open(output_path, file_mode[0], encoding='utf-8')
+            write_path = Path(str(final_path) + '.partial')
+            file_mode = 'wt'
 
-        return output_path, file_handle
+        if compress:
+            file_handle = gzip.open(write_path, file_mode, encoding='utf-8')
+        else:
+            file_handle = open(write_path, file_mode, encoding='utf-8')
+
+        return final_path, write_path, file_handle
 
     def _build_select_query(
         self,
@@ -115,7 +170,14 @@ class TableDumper:
             query += f" WHERE {settings.where_clause}"
 
         if settings.order_by and settings.order_by in columns:
-            direction = settings.order_direction.upper()
+            try:
+                direction = OrderDirection(settings.order_direction.upper()).value
+            except ValueError:
+                logging.warning(
+                    f"Table '{table}': invalid order_direction "
+                    f"'{settings.order_direction}', defaulting to ASC"
+                )
+                direction = OrderDirection.ASC.value
             query += f" ORDER BY `{settings.order_by}` {direction}"
         elif settings.order_by:
             logging.warning(f"Order column '{settings.order_by}' not found in table '{table}'")
@@ -126,8 +188,14 @@ class TableDumper:
                 f"but 'order_by' is not specified. The order_direction setting will be ignored."
             )
 
-        if settings.row_limit is not None and settings.row_limit >= 0:
-            query += f" LIMIT {settings.row_limit}"
+        if settings.row_limit is not None:
+            if settings.row_limit >= 0:
+                query += f" LIMIT {settings.row_limit}"
+            else:
+                logging.warning(
+                    f"Table '{table}': negative row_limit "
+                    f"({settings.row_limit}) treated as unlimited"
+                )
 
         return query
 
@@ -136,7 +204,8 @@ class TableDumper:
         file_handle: TextIO,
         table: str,
         columns: list[str],
-        query: str
+        query: str,
+        add_drop_table: bool = True
     ) -> int:
         """Dump table data as SQL INSERT statements."""
         # Write header
@@ -145,9 +214,10 @@ class TableDumper:
         file_handle.write(f"-- Generated: {datetime.now().isoformat()}\n")
         file_handle.write(f"-- -------------------------------------------------\n\n")
 
-        # Write CREATE TABLE statement
+        # Write CREATE TABLE statement. DROP is only safe for a full dump (see dump_table).
         create_statement = self.connection.get_create_table(table)
-        file_handle.write(f"DROP TABLE IF EXISTS `{table}`;\n\n")
+        if add_drop_table:
+            file_handle.write(f"DROP TABLE IF EXISTS `{table}`;\n\n")
         file_handle.write(f"{create_statement};\n\n")
 
         # Write data
@@ -207,9 +277,12 @@ class TableDumper:
         if formatter:
             return formatter(value)
 
-        # Slow path: string conversion with escaping
+        # Slow path: string conversion with escaping.
+        # Backslash MUST be escaped first so the escape sequences we add below
+        # are not themselves doubled. Covers the same specials as mysqldump.
         escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
         escaped = escaped.replace("\n", "\\n").replace("\r", "\\r")
+        escaped = escaped.replace("\0", "\\0").replace("\x1a", "\\Z")
         return f"'{escaped}'"
 
     def _dump_as_csv(

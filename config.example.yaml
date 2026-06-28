@@ -8,6 +8,7 @@ instances:
     port: 3306
     user: "root"
     password: "your_password"  # Or use environment variable: ${MYSQL_PRIMARY_PASSWORD}
+    # consistent_snapshot: true  # default true (InnoDB). Set false for MyISAM-only instances.
 
   secondary:
     host: "192.168.1.100"
@@ -23,6 +24,8 @@ output:
   timestamp_suffix: true  # Append timestamp to dump files
   separate_files: true  # Create separate files per table
   batch_size: 1000  # Number of rows per INSERT statement (tune for performance)
+  # add_drop_table: false  # force-disable DROP TABLE. Default: DROP only on full
+  #                        # (unfiltered) dumps; partial dumps never DROP, to keep restores safe.
 
 # Global defaults (can be overridden per database/table)
 defaults:

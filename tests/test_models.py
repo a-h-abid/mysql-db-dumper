@@ -239,3 +239,36 @@ class TestDumpSettings:
         settings = DumpSettings.from_configs(defaults, db_config, table_config)
         assert settings.order_direction == "DESC"  # table wins
         assert settings.order_by == "id"  # from db_config
+
+
+class TestCoerceOptionalInt:
+    """Tests for coerce_optional_int and its use in DumpSettings."""
+
+    def test_passthrough_int(self):
+        from src.models import coerce_optional_int
+        assert coerce_optional_int(5000, "row_limit") == 5000
+
+    def test_none_stays_none(self):
+        from src.models import coerce_optional_int
+        assert coerce_optional_int(None, "row_limit") is None
+
+    def test_numeric_string_coerced(self):
+        from src.models import coerce_optional_int
+        assert coerce_optional_int("5000", "row_limit") == 5000
+
+    def test_garbage_string_raises(self):
+        import pytest
+        from src.models import coerce_optional_int
+        with pytest.raises(ValueError):
+            coerce_optional_int("not-a-number", "row_limit")
+
+    def test_bool_rejected(self):
+        import pytest
+        from src.models import coerce_optional_int
+        with pytest.raises(ValueError):
+            coerce_optional_int(True, "row_limit")
+
+    def test_from_configs_coerces_string_row_limit(self):
+        from src.models import DumpSettings
+        settings = DumpSettings.from_configs({}, {"row_limit": "5000"}, {})
+        assert settings.row_limit == 5000

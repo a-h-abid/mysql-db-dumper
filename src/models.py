@@ -7,6 +7,23 @@ from enum import Enum
 from typing import Optional, Any
 
 
+def coerce_optional_int(value: Any, field_name: str) -> Optional[int]:
+    """Coerce a config value to int (or None), accepting numeric strings.
+
+    Environment-variable interpolation yields strings, so a config value like
+    row_limit: "${LIMIT}" arrives as "5000" rather than 5000. Normalize such values
+    and fail loudly on genuinely non-numeric input.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"'{field_name}' must be an integer, got boolean {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"'{field_name}' must be an integer, got {value!r}")
+
+
 class OutputFormat(Enum):
     """Supported output formats for database dumps."""
     SQL = "sql"
@@ -88,4 +105,6 @@ class DumpSettings:
                 settings[key] = db_config[key]
             if key in table_config:
                 settings[key] = table_config[key]
+        if 'row_limit' in settings:
+            settings['row_limit'] = coerce_optional_int(settings['row_limit'], 'row_limit')
         return cls(**settings)

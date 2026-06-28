@@ -194,29 +194,20 @@ class TestEnvironmentVariables:
             output = loader.get_output_settings()
             assert output["directory"] == "/var/backups/dumps"
 
-    def test_missing_env_var_becomes_empty(self, env_config_file):
-        """Test missing environment variables become empty strings."""
+    def test_missing_env_var_raises(self, env_config_file):
+        """Missing env vars fail fast instead of silently becoming empty strings."""
         with mock.patch.dict(os.environ, {}, clear=True):
-            # Clear any existing env vars that might match
             for key in ["DB_HOST", "DB_USER", "DB_PASSWORD", "OUTPUT_DIR"]:
                 os.environ.pop(key, None)
+            with pytest.raises(ValueError) as exc_info:
+                ConfigLoader(env_config_file)
+            assert "not set" in str(exc_info.value)
 
-            loader = ConfigLoader(env_config_file)
-            instance = loader.get_instance("primary")
-            assert instance["host"] == ""
-            assert instance["user"] == ""
-            assert instance["password"] == ""
-
-    def test_partial_env_var_resolution(self, env_config_file):
-        """Test partial environment variable resolution."""
-        with mock.patch.dict(os.environ, {
-            "DB_HOST": "localhost",
-            "OUTPUT_DIR": "/data"
-        }, clear=True):
-            loader = ConfigLoader(env_config_file)
-            instance = loader.get_instance("primary")
-            assert instance["host"] == "localhost"
-            assert instance["user"] == ""  # Not set
+    def test_partial_env_var_raises_on_missing(self, env_config_file):
+        """If any referenced env var is unset, loading fails fast."""
+        with mock.patch.dict(os.environ, {"DB_HOST": "localhost", "OUTPUT_DIR": "/data"}, clear=True):
+            with pytest.raises(ValueError):
+                ConfigLoader(env_config_file)
 
     def test_env_var_in_nested_list(self):
         """Test env var resolution in nested lists."""
