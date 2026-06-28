@@ -340,7 +340,7 @@ databases:
 Run unit tests with coverage:
 
 ```bash
-python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=95 -v
+python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=98 -v
 ```
 
 Or without coverage:

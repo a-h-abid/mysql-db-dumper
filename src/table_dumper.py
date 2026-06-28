@@ -5,12 +5,13 @@ Table dumping functionality for MySQL Database Dumper.
 import csv
 import gzip
 import logging
+import math
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, TextIO
 
-from .connection import DatabaseConnection
+from .connection import DatabaseConnection, quote_identifier, validate_where_clause
 from .models import DumpSettings, OrderDirection, OutputFormat, TableStats, coerce_optional_int
 
 
@@ -45,7 +46,7 @@ class TableDumper:
             type(None): lambda v: 'NULL',
             bool: lambda v: '1' if v else '0',
             int: str,
-            float: str,
+            float: self._format_float,
             Decimal: str,
             bytes: lambda v: f"X'{v.hex()}'",
             bytearray: lambda v: f"X'{v.hex()}'",
@@ -61,7 +62,8 @@ class TableDumper:
         output_path: Path,
         settings: DumpSettings,
         output_format: OutputFormat = OutputFormat.SQL,
-        append: bool = False
+        append: bool = False,
+        defer_publish: bool = False,
     ) -> TableStats:
         """
         Dump a table to file.
@@ -102,7 +104,9 @@ class TableDumper:
                 )
                 add_drop_table = False
 
-            final_path, write_path, file_handle = self._open_output_file(output_path, append)
+            final_path, write_path, file_handle = self._open_output_file(
+                output_path, append, defer_publish=defer_publish
+            )
             stats.file_path = str(final_path)
 
             try:
@@ -120,7 +124,7 @@ class TableDumper:
                 file_handle.close()
 
             # Atomic publish: only expose a fully-written dump at the final path.
-            if write_path != final_path:
+            if write_path != final_path and not defer_publish:
                 Path(write_path).replace(final_path)
 
             stats.success = True
@@ -131,23 +135,38 @@ class TableDumper:
 
         return stats
 
-    def _open_output_file(self, output_path: Path, append: bool) -> tuple[Path, Path, TextIO]:
+    def _resolve_output_paths(
+        self,
+        output_path: Path,
+        append: bool,
+        defer_publish: bool = False
+    ) -> tuple[Path, Path]:
+        """Resolve the logical final path and the path that should be written."""
+        compress = self.output_settings.get('compress', False)
+        final_path = Path(str(output_path) + '.gz') if compress else output_path
+
+        if append and not defer_publish:
+            return final_path, final_path
+        return final_path, Path(str(final_path) + '.partial')
+
+    def _open_output_file(
+        self,
+        output_path: Path,
+        append: bool,
+        defer_publish: bool = False
+    ) -> tuple[Path, Path, TextIO]:
         """Open output file with optional compression.
 
         Returns (final_path, write_path, handle). For non-append writes, write_path is a
         temporary '.partial' file the caller atomically renames to final_path on success,
         so an interrupted dump never leaves a truncated file at final_path. Append mode
-        targets final_path directly (a shared single-file dump cannot be rebuilt per table).
+        targets final_path directly unless publish is deferred for a database-level dump.
         """
         compress = self.output_settings.get('compress', False)
-        final_path = Path(str(output_path) + '.gz') if compress else output_path
-
-        if append:
-            write_path = final_path
-            file_mode = 'at'
-        else:
-            write_path = Path(str(final_path) + '.partial')
-            file_mode = 'wt'
+        final_path, write_path = self._resolve_output_paths(
+            output_path, append, defer_publish=defer_publish
+        )
+        file_mode = 'at' if append else 'wt'
 
         if compress:
             file_handle = gzip.open(write_path, file_mode, encoding='utf-8')
@@ -163,8 +182,9 @@ class TableDumper:
         settings: DumpSettings
     ) -> str:
         """Build SELECT query with options."""
-        quoted_columns = ', '.join(f'`{col}`' for col in columns)
-        query = f"SELECT {quoted_columns} FROM `{table}`"
+        validate_where_clause(settings.where_clause)
+        quoted_columns = ', '.join(quote_identifier(col) for col in columns)
+        query = f"SELECT {quoted_columns} FROM {quote_identifier(table)}"
 
         if settings.where_clause:
             query += f" WHERE {settings.where_clause}"
@@ -178,7 +198,7 @@ class TableDumper:
                     f"'{settings.order_direction}', defaulting to ASC"
                 )
                 direction = OrderDirection.ASC.value
-            query += f" ORDER BY `{settings.order_by}` {direction}"
+            query += f" ORDER BY {quote_identifier(settings.order_by)} {direction}"
         elif settings.order_by:
             logging.warning(f"Order column '{settings.order_by}' not found in table '{table}'")
         elif settings.order_direction != "ASC":
@@ -199,6 +219,12 @@ class TableDumper:
 
         return query
 
+    def _format_float(self, value: float) -> str:
+        """Format finite floats while rejecting SQL-invalid NaN/Infinity values."""
+        if not math.isfinite(value):
+            raise ValueError(f"Cannot dump non-finite float value: {value!r}")
+        return str(value)
+
     def _dump_as_sql(
         self,
         file_handle: TextIO,
@@ -217,7 +243,7 @@ class TableDumper:
         # Write CREATE TABLE statement. DROP is only safe for a full dump (see dump_table).
         create_statement = self.connection.get_create_table(table)
         if add_drop_table:
-            file_handle.write(f"DROP TABLE IF EXISTS `{table}`;\n\n")
+            file_handle.write(f"DROP TABLE IF EXISTS {quote_identifier(table)};\n\n")
         file_handle.write(f"{create_statement};\n\n")
 
         # Write data
@@ -227,7 +253,7 @@ class TableDumper:
 
             rows_dumped = 0
             batch = []
-            quoted_columns = ', '.join([f'`{col}`' for col in columns])
+            quoted_columns = ', '.join([quote_identifier(col) for col in columns])
 
             for row in cursor:
                 batch.append(row)
@@ -257,7 +283,7 @@ class TableDumper:
         if not rows:
             return
 
-        file_handle.write(f"INSERT INTO `{table}` ({columns}) VALUES\n")
+        file_handle.write(f"INSERT INTO {quote_identifier(table)} ({columns}) VALUES\n")
 
         value_lines = [
             f"  ({', '.join(self._format_sql_value(val) for val in row)})"

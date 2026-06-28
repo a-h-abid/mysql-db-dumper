@@ -15,6 +15,9 @@ from .models import DatabaseStats, DumpSettings, DumpStats, OutputFormat, TableS
 from .table_dumper import TableDumper
 
 
+DEFAULT_CONNECT_TIMEOUT = DatabaseConnection.DEFAULT_CONNECT_TIMEOUT
+
+
 def _safe_path_component(name: str) -> str:
     """Reduce a name to a single safe filesystem component (strips any path/traversal)."""
     return Path(str(name)).name
@@ -139,8 +142,12 @@ class DatabaseDumper:
                 password=instance_config['password'],
                 database=db_name,
                 connect_timeout=instance_config.get(
-                    'connect_timeout', DatabaseConnection.DEFAULT_CONNECT_TIMEOUT
+                    'connect_timeout', DEFAULT_CONNECT_TIMEOUT
                 ),
+                ssl_ca=instance_config.get('ssl_ca'),
+                ssl_cert=instance_config.get('ssl_cert'),
+                ssl_key=instance_config.get('ssl_key'),
+                ssl_verify_cert=instance_config.get('ssl_verify_cert'),
             ) as conn:
                 if instance_config.get('consistent_snapshot', True):
                     conn.start_consistent_snapshot()
@@ -189,11 +196,21 @@ class DatabaseDumper:
         dumper = TableDumper(conn, self.output_settings)
         output_format = OutputFormat(self.output_settings.get('format', 'sql'))
         separate_files = self.output_settings.get('separate_files', True)
+        single_final_path = None
+        single_write_path = None
+        if not separate_files:
+            single_output_path = self._single_file_output_path(
+                db_config, db_output_dir, output_format, timestamp
+            )
+            single_final_path, single_write_path = dumper._resolve_output_paths(
+                single_output_path, append=False, defer_publish=True
+            )
 
         for i, table_config in enumerate(tables_to_dump):
             table_stats = self._dump_single_table(
                 dumper, table_config, db_config, db_output_dir,
-                output_format, separate_files, timestamp, is_first=(i == 0)
+                output_format, separate_files, timestamp, is_first=(i == 0),
+                defer_publish=not separate_files
             )
 
             db_stats.tables.append(table_stats)
@@ -202,6 +219,31 @@ class DatabaseDumper:
             self.stats.total_rows += table_stats.rows_dumped
 
             self._log_table_result(table_stats, db_name)
+
+            if not separate_files and not table_stats.success:
+                break
+
+        if (
+            not separate_files
+            and single_final_path is not None
+            and single_write_path is not None
+            and single_write_path.exists()
+            and all(table.success for table in db_stats.tables)
+        ):
+            single_write_path.replace(single_final_path)
+
+    def _single_file_output_path(
+        self,
+        db_config: dict[str, Any],
+        db_output_dir: Path,
+        output_format: OutputFormat,
+        timestamp: str
+    ) -> Path:
+        """Build the logical final path for a single-file database dump."""
+        safe_db = _safe_path_component(db_config['name'])
+        if self.output_settings.get('timestamp_suffix', True):
+            return db_output_dir / f"{safe_db}_{timestamp}.{output_format.extension}"
+        return db_output_dir / f"{safe_db}.{output_format.extension}"
 
     def _get_tables_to_dump(
         self,
@@ -250,7 +292,8 @@ class DatabaseDumper:
         output_format: OutputFormat,
         separate_files: bool,
         timestamp: str,
-        is_first: bool
+        is_first: bool,
+        defer_publish: bool = False
     ) -> TableStats:
         """Dump a single table and return stats."""
         if isinstance(table_config, str):
@@ -271,11 +314,9 @@ class DatabaseDumper:
             append = False
         else:
             # Single file directly in output directory
-            safe_db = _safe_path_component(db_config['name'])
-            if self.output_settings.get('timestamp_suffix', True):
-                output_path = db_output_dir / f"{safe_db}_{timestamp}.{output_format.extension}"
-            else:
-                output_path = db_output_dir / f"{safe_db}.{output_format.extension}"
+            output_path = self._single_file_output_path(
+                db_config, db_output_dir, output_format, timestamp
+            )
             append = not is_first
 
         return dumper.dump_table(
@@ -283,7 +324,8 @@ class DatabaseDumper:
             output_path=output_path,
             settings=settings,
             output_format=output_format,
-            append=append
+            append=append,
+            defer_publish=defer_publish,
         )
 
     def _log_table_result(self, table_stats: TableStats, db_name: str) -> None:

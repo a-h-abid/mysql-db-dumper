@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from src.connection import DatabaseConnection
+from src.connection import DatabaseConnection, quote_identifier
 from src.models import ColumnInfo
 
 
@@ -58,6 +58,41 @@ class TestDatabaseConnection:
             charset='utf8mb4',
             use_unicode=True,
             connection_timeout=30
+        )
+        assert conn.connection == mock_connection
+
+    @mock.patch('src.connection.mysql.connector.connect')
+    def test_connect_with_tls_options(self, mock_connect):
+        """TLS options are passed through when configured."""
+        mock_connection = mock.MagicMock()
+        mock_connect.return_value = mock_connection
+
+        conn = DatabaseConnection(
+            host="db.example.com",
+            port=3306,
+            user="root",
+            password="secret",
+            database="testdb",
+            ssl_ca="/certs/ca.pem",
+            ssl_cert="/certs/client-cert.pem",
+            ssl_key="/certs/client-key.pem",
+            ssl_verify_cert=True,
+        )
+        conn.connect()
+
+        mock_connect.assert_called_once_with(
+            host="db.example.com",
+            port=3306,
+            user="root",
+            password="secret",
+            database="testdb",
+            charset='utf8mb4',
+            use_unicode=True,
+            connection_timeout=30,
+            ssl_ca="/certs/ca.pem",
+            ssl_cert="/certs/client-cert.pem",
+            ssl_key="/certs/client-key.pem",
+            ssl_verify_cert=True,
         )
         assert conn.connection == mock_connection
 
@@ -217,6 +252,23 @@ class TestDatabaseConnection:
         assert columns[1].nullable == "YES"
 
     @mock.patch('src.connection.mysql.connector.connect')
+    def test_metadata_queries_escape_table_identifier(self, mock_connect):
+        """Backticks in table identifiers are doubled in metadata queries."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.fetchall.return_value = []
+        mock_connection = mock.MagicMock()
+        mock_connection.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_connection
+
+        conn = DatabaseConnection(
+            host="localhost", port=3306, user="root", password="secret"
+        )
+        conn.connect()
+        conn.get_table_columns("odd`table")
+
+        mock_cursor.execute.assert_called_once_with("DESCRIBE `odd``table`", None)
+
+    @mock.patch('src.connection.mysql.connector.connect')
     def test_get_cursor(self, mock_connect):
         """Test getting a cursor."""
         mock_cursor = mock.MagicMock()
@@ -276,6 +328,28 @@ class TestDatabaseConnection:
         assert result == "CREATE TABLE `users` (`id` int NOT NULL) ENGINE=InnoDB"
 
     @mock.patch('src.connection.mysql.connector.connect')
+    def test_get_create_table_escapes_table_identifier(self, mock_connect):
+        """SHOW CREATE TABLE escapes embedded backticks in table names."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.fetchall.return_value = [
+            ("odd`table", "CREATE TABLE `odd``table` (`id` int)")
+        ]
+        mock_connection = mock.MagicMock()
+        mock_connection.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_connection
+
+        conn = DatabaseConnection(
+            host="localhost", port=3306, user="root", password="secret"
+        )
+        conn.connect()
+        result = conn.get_create_table("odd`table")
+
+        assert result == "CREATE TABLE `odd``table` (`id` int)"
+        mock_cursor.execute.assert_called_once_with(
+            "SHOW CREATE TABLE `odd``table`", None
+        )
+
+    @mock.patch('src.connection.mysql.connector.connect')
     def test_get_row_count(self, mock_connect):
         """Test getting row count without WHERE clause."""
         mock_cursor = mock.MagicMock()
@@ -311,6 +385,25 @@ class TestDatabaseConnection:
         mock_cursor.execute.assert_called_once_with(
             "SELECT COUNT(*) FROM `users` WHERE active = 1", None
         )
+
+    @mock.patch('src.connection.mysql.connector.connect')
+    def test_get_row_count_rejects_dangerous_where_clause(self, mock_connect):
+        """Row-count WHERE fragments cannot include statement separators."""
+        mock_connection = mock.MagicMock()
+        mock_connection.cursor.return_value = mock.MagicMock()
+        mock_connect.return_value = mock_connection
+
+        conn = DatabaseConnection(
+            host="localhost", port=3306, user="root", password="secret"
+        )
+        conn.connect()
+
+        with pytest.raises(ValueError, match="where_clause"):
+            conn.get_row_count("users", where_clause="active = 1; DROP TABLE users")
+
+    def test_quote_identifier_escapes_backticks(self):
+        """Identifier quoting doubles embedded backticks."""
+        assert quote_identifier("odd`name") == "`odd``name`"
 
     def test_init_with_custom_timeouts(self):
         """Test connection initialization with custom timeout."""

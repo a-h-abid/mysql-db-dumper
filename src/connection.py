@@ -11,6 +11,21 @@ from mysql.connector import Error as MySQLError
 from .models import ColumnInfo, coerce_optional_int
 
 
+def quote_identifier(name: str) -> str:
+    """Quote a MySQL identifier, escaping embedded backticks."""
+    return f"`{str(name).replace('`', '``')}`"
+
+
+def validate_where_clause(where_clause: Optional[str]) -> None:
+    """Reject WHERE fragments that can terminate or comment out the query."""
+    if not where_clause:
+        return
+
+    forbidden_tokens = (';', '--', '#', '/*', '*/')
+    if any(token in where_clause for token in forbidden_tokens):
+        raise ValueError("where_clause contains unsupported SQL separator or comment token")
+
+
 class DatabaseConnection:
     """Manages MySQL database connections with context manager support."""
 
@@ -26,6 +41,10 @@ class DatabaseConnection:
         password: str,
         database: Optional[str] = None,
         connect_timeout: int = DEFAULT_CONNECT_TIMEOUT,
+        ssl_ca: Optional[str] = None,
+        ssl_cert: Optional[str] = None,
+        ssl_key: Optional[str] = None,
+        ssl_verify_cert: Optional[bool] = None,
     ):
         self.host = host
         self.port = coerce_optional_int(port, 'port')
@@ -33,6 +52,15 @@ class DatabaseConnection:
         self.password = password
         self.database = database
         self.connect_timeout = coerce_optional_int(connect_timeout, 'connect_timeout')
+        self.ssl_options = {
+            key: value for key, value in {
+                'ssl_ca': ssl_ca,
+                'ssl_cert': ssl_cert,
+                'ssl_key': ssl_key,
+                'ssl_verify_cert': ssl_verify_cert,
+            }.items()
+            if value is not None
+        }
         self.connection = None
 
     def __enter__(self) -> "DatabaseConnection":
@@ -47,16 +75,18 @@ class DatabaseConnection:
     def connect(self) -> None:
         """Establish database connection."""
         try:
-            self.connection = mysql.connector.connect(
-                host=self.host,
-                port=self.port,
-                user=self.user,
-                password=self.password,
-                database=self.database,
-                charset=self.DEFAULT_CHARSET,
-                use_unicode=True,
-                connection_timeout=self.connect_timeout,
-            )
+            connect_kwargs = {
+                'host': self.host,
+                'port': self.port,
+                'user': self.user,
+                'password': self.password,
+                'database': self.database,
+                'charset': self.DEFAULT_CHARSET,
+                'use_unicode': True,
+                'connection_timeout': self.connect_timeout,
+                **self.ssl_options,
+            }
+            self.connection = mysql.connector.connect(**connect_kwargs)
             logging.info(f"Connected to {self.host}:{self.port}/{self.database or 'N/A'}")
         except MySQLError as e:
             logging.error(f"Failed to connect to database: {e}")
@@ -107,7 +137,7 @@ class DatabaseConnection:
 
     def get_table_columns(self, table: str) -> list[ColumnInfo]:
         """Get column information for a table."""
-        results = self.execute_query(f"DESCRIBE `{table}`")
+        results = self.execute_query(f"DESCRIBE {quote_identifier(table)}")
         return [
             ColumnInfo(
                 name=row[0],
@@ -122,12 +152,13 @@ class DatabaseConnection:
 
     def get_create_table(self, table: str) -> str:
         """Get CREATE TABLE statement."""
-        results = self.execute_query(f"SHOW CREATE TABLE `{table}`")
+        results = self.execute_query(f"SHOW CREATE TABLE {quote_identifier(table)}")
         return results[0][1]
 
     def get_row_count(self, table: str, where_clause: Optional[str] = None) -> int:
         """Get row count for a table."""
-        query = f"SELECT COUNT(*) FROM `{table}`"
+        validate_where_clause(where_clause)
+        query = f"SELECT COUNT(*) FROM {quote_identifier(table)}"
         if where_clause:
             query += f" WHERE {where_clause}"
         results = self.execute_query(query)

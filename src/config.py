@@ -23,6 +23,9 @@ class ConfigLoader:
         with open(self.config_path, 'r') as f:
             config = yaml.safe_load(f)
 
+        if not isinstance(config, dict):
+            raise ValueError("Configuration root must be a YAML mapping")
+
         return self._resolve_env_vars(config)
 
     def _resolve_env_vars(self, obj: Any) -> Any:

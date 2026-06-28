@@ -145,6 +145,22 @@ class TestConfigLoader:
         assert loader.get_output_settings() == {}
         assert loader.get_logging_settings() == {}
 
+    @pytest.mark.parametrize("content", ["", "- item\n", "plain-string\n", "123\n"])
+    def test_invalid_yaml_root_type_raises(self, content):
+        """Config root must be a mapping so accessors fail clearly."""
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.yaml', delete=False
+        ) as f:
+            f.write(content)
+            f.flush()
+            config_path = f.name
+
+        try:
+            with pytest.raises(ValueError, match="YAML mapping"):
+                ConfigLoader(config_path)
+        finally:
+            os.unlink(config_path)
+
 
 class TestEnvironmentVariables:
     """Tests for environment variable resolution."""

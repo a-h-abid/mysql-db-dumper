@@ -399,6 +399,46 @@ class TestDumpDatabase:
         mock_conn.start_consistent_snapshot.assert_not_called()
 
     @mock.patch('src.database_dumper.DatabaseConnection')
+    def test_tls_options_passed_to_connection(self, mock_conn_class, mock_config):
+        """Instance TLS settings are passed into DatabaseConnection."""
+        mock_config.get_instance.return_value = {
+            "host": "db.example.com",
+            "port": 3306,
+            "user": "root",
+            "password": "secret",
+            "ssl_ca": "/certs/ca.pem",
+            "ssl_cert": "/certs/client-cert.pem",
+            "ssl_key": "/certs/client-key.pem",
+            "ssl_verify_cert": True,
+            "consistent_snapshot": False,
+        }
+        mock_conn = mock.MagicMock()
+        mock_conn.__enter__ = mock.MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = mock.MagicMock(return_value=False)
+        mock_conn.get_tables.return_value = []
+        mock_conn_class.return_value = mock_conn
+
+        dumper = DatabaseDumper(mock_config)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._dump_database(
+                {"name": "testdb", "instance": "primary", "tables": "*"},
+                Path(tmpdir), "20240101_120000"
+            )
+
+        mock_conn_class.assert_called_once_with(
+            host="db.example.com",
+            port=3306,
+            user="root",
+            password="secret",
+            database="testdb",
+            connect_timeout=30,
+            ssl_ca="/certs/ca.pem",
+            ssl_cert="/certs/client-cert.pem",
+            ssl_key="/certs/client-key.pem",
+            ssl_verify_cert=True,
+        )
+
+    @mock.patch('src.database_dumper.DatabaseConnection')
     def test_missing_name_records_error_and_continues(self, mock_conn_class, mock_config):
         """A database entry with no name is skipped (no connection), error recorded."""
         dumper = DatabaseDumper(mock_config)
@@ -460,9 +500,16 @@ class TestProcessDatabaseTables:
         }
 
         mock_td = mock.MagicMock()
-        mock_td.dump_table.return_value = TableStats(
-            table="users", rows_dumped=5, success=True
+        mock_td._resolve_output_paths.side_effect = lambda output_path, append=False, defer_publish=False: (
+            output_path,
+            Path(str(output_path) + ".partial"),
         )
+
+        def dump_side_effect(**kwargs):
+            Path(str(kwargs["output_path"]) + ".partial").write_text("users dump")
+            return TableStats(table="users", rows_dumped=5, success=True)
+
+        mock_td.dump_table.side_effect = dump_side_effect
         mock_td_class.return_value = mock_td
 
         mock_conn = mock.MagicMock()
@@ -476,6 +523,8 @@ class TestProcessDatabaseTables:
             dumper._process_database_tables(
                 mock_conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
             )
+            published = Path(tmpdir) / "testdb_20240101_120000.sql"
+            assert published.exists()
 
         assert len(db_stats.tables) == 1
 
@@ -661,8 +710,8 @@ class TestDumpSingleTable:
         call_args = mock_dumper.dump_table.call_args
         assert call_args.kwargs.get('append', call_args[1].get('append')) is False
 
-    def test_dump_single_table_single_file_append(self, mock_config):
-        """Test dumping second table in single-file mode (append)."""
+    def test_dump_single_table_single_file_append_deferred(self, mock_config):
+        """Second single-file table appends to the deferred partial file."""
         mock_dumper = mock.MagicMock()
         mock_dumper.dump_table.return_value = TableStats(
             table="orders", rows_dumped=3, success=True
@@ -679,12 +728,61 @@ class TestDumpSingleTable:
         with tempfile.TemporaryDirectory() as tmpdir:
             result = dumper._dump_single_table(
                 mock_dumper, {"name": "orders"}, db_config,
-                Path(tmpdir), OutputFormat.SQL, False, "20240101", is_first=False
+                Path(tmpdir), OutputFormat.SQL, False, "20240101", is_first=False,
+                defer_publish=True
             )
 
         # Verify append=True for non-first table
         call_args = mock_dumper.dump_table.call_args
         assert call_args.kwargs.get('append', call_args[1].get('append')) is True
+        assert call_args.kwargs.get('defer_publish', call_args[1].get('defer_publish')) is True
+
+    @mock.patch('src.database_dumper.TableDumper')
+    def test_single_file_failure_does_not_publish_final_file(self, mock_td_class, mock_config):
+        """A later table failure leaves only the partial single-file artifact."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+        }
+
+        def dump_side_effect(**kwargs):
+            output_path = Path(kwargs["output_path"])
+            partial_path = Path(str(output_path) + ".partial")
+            if kwargs["table"] == "users":
+                partial_path.write_text("users dump")
+                return TableStats(table="users", rows_dumped=1, success=True)
+            with partial_path.open("a", encoding="utf-8") as handle:
+                handle.write("\norders partial")
+            return TableStats(table="orders", rows_dumped=0, success=False, error="boom")
+
+        mock_td = mock.MagicMock()
+        mock_td._resolve_output_paths.side_effect = lambda output_path, append=False, defer_publish=False: (
+            output_path,
+            Path(str(output_path) + ".partial"),
+        )
+        mock_td.dump_table.side_effect = dump_side_effect
+        mock_td_class.return_value = mock_td
+
+        mock_conn = mock.MagicMock()
+        mock_conn.get_tables.return_value = ["users", "orders", "ignored"]
+
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                mock_conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            final_path = Path(tmpdir) / "testdb_20240101_120000.sql"
+            partial_path = Path(str(final_path) + ".partial")
+
+            assert not final_path.exists()
+            assert partial_path.exists()
+
+        assert [table.table for table in db_stats.tables] == ["users", "orders"]
+        assert len(dumper.stats.errors) == 1
 
     def test_dump_single_table_no_timestamp_suffix(self, mock_config):
         """Test dumping table in single-file mode without timestamp suffix."""

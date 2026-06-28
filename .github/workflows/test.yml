@@ -36,7 +36,7 @@ jobs:
           python -m pytest tests/ \
             --cov=src \
             --cov-report=term-missing \
-            --cov-fail-under=95 \
+            --cov-fail-under=98 \
             -v
 
   integration-tests:

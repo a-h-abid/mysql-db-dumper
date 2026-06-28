@@ -155,6 +155,25 @@ class TestBuildSelectQuery:
         assert "`user-id`" in query
         assert "`first name`" in query
 
+    def test_identifiers_escape_embedded_backticks(self, dumper):
+        """Embedded backticks in table and column names are doubled."""
+        settings = DumpSettings(order_by="created`at")
+        query = dumper._build_select_query(
+            "odd`table", ["id", "created`at"], settings
+        )
+
+        assert query == (
+            "SELECT `id`, `created``at` FROM `odd``table` "
+            "ORDER BY `created``at` ASC"
+        )
+
+    def test_dangerous_where_clause_rejected(self, dumper):
+        """Multi-statement WHERE fragments are rejected before execution."""
+        settings = DumpSettings(where_clause="active = 1; DROP TABLE users")
+
+        with pytest.raises(ValueError, match="where_clause"):
+            dumper._build_select_query("users", ["id"], settings)
+
 
 class TestTypeFormatters:
     """Tests for type formatters used in SQL generation."""
@@ -189,6 +208,12 @@ class TestTypeFormatters:
         """Test float formatting."""
         result = dumper._type_formatters[float](3.14159)
         assert result == "3.14159"
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_format_non_finite_float_rejected(self, dumper, value):
+        """NaN and infinity cannot be dumped as bare SQL tokens."""
+        with pytest.raises(ValueError, match="non-finite float"):
+            dumper._type_formatters[float](value)
 
     def test_format_bytes(self, dumper):
         """Test bytes formatting as hex."""
@@ -430,7 +455,7 @@ class TestDumpTable:
 
         # Override CSV_BATCH_SIZE for testing
         dumper = TableDumper(mock_connection, {"compress": False})
-        dumper.CSV_BATCH_SIZE = 3
+        vars(dumper)["CSV_BATCH_SIZE"] = 3
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "test.csv"
@@ -506,6 +531,31 @@ class TestDumpTable:
             assert "`id`" in content
             assert "`email`" in content
 
+    def test_dump_sql_escapes_table_and_column_identifiers(self):
+        """SQL dump output escapes embedded backticks in identifiers."""
+        mock_connection = mock.MagicMock()
+        mock_connection.get_table_columns.return_value = [
+            ColumnInfo("id", "int", "NO", "PRI", None, ""),
+            ColumnInfo("we`ird", "varchar(255)", "YES", "", None, ""),
+        ]
+        mock_connection.get_create_table.return_value = (
+            "CREATE TABLE `odd``table` (`id` int, `we``ird` varchar(255))"
+        )
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([(1, "value")]))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "t.sql"
+            stats = dumper.dump_table("odd`table", output_path, DumpSettings(), OutputFormat.SQL)
+
+            content = output_path.read_text()
+            assert stats.success is True
+            assert "DROP TABLE IF EXISTS `odd``table`;" in content
+            assert "INSERT INTO `odd``table` (`id`, `we``ird`) VALUES" in content
+
 
 class TestFormatSqlValue:
     """Tests for _format_sql_value method."""
@@ -548,6 +598,12 @@ class TestFormatSqlValue:
     def test_format_int_via_method(self, dumper):
         """Test int formatting via the method."""
         assert dumper._format_sql_value(42) == "42"
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_format_non_finite_float_via_method(self, dumper, value):
+        """The public SQL value formatter rejects non-finite floats."""
+        with pytest.raises(ValueError, match="non-finite float"):
+            dumper._format_sql_value(value)
 
     def test_format_datetime_via_method(self, dumper):
         """Test datetime formatting via the method."""
