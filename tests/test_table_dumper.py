@@ -556,6 +556,124 @@ class TestDumpTable:
             assert "DROP TABLE IF EXISTS `odd``table`;" in content
             assert "INSERT INTO `odd``table` (`id`, `we``ird`) VALUES" in content
 
+    def test_full_sql_dump_emits_fk_wrapper(self, mock_connection):
+        """A full SQL dump wraps DDL+inserts in SET FOREIGN_KEY_CHECKS=0/1 by default."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([(1, "Alice")]))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+            stats = dumper.dump_table(
+                "users", output_path, DumpSettings(), OutputFormat.SQL
+            )
+
+            assert stats.success is True
+            content = output_path.read_text()
+            assert content.count("SET FOREIGN_KEY_CHECKS=0;") == 1
+            assert content.count("SET FOREIGN_KEY_CHECKS=1;") == 1
+            # =0 must come before CREATE; =1 must come after the last insert.
+            assert content.index("SET FOREIGN_KEY_CHECKS=0;") < content.index("CREATE TABLE")
+            assert content.index("INSERT INTO `users`") < content.index("SET FOREIGN_KEY_CHECKS=1;")
+
+    def test_partial_row_limit_dump_omits_fk_wrapper(self, mock_connection):
+        """A row_limited dump must NOT emit the FK wrapper (orphan-row risk)."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([(1, "Alice")]))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+            stats = dumper.dump_table(
+                "users", output_path, DumpSettings(row_limit=10), OutputFormat.SQL
+            )
+
+            content = output_path.read_text()
+            assert stats.success is True
+            assert "FOREIGN_KEY_CHECKS" not in content
+
+    def test_partial_where_dump_omits_fk_wrapper(self, mock_connection):
+        """A where_clause dump must NOT emit the FK wrapper."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([(1, "Alice")]))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+            stats = dumper.dump_table(
+                "users", output_path,
+                DumpSettings(where_clause="active = 1"), OutputFormat.SQL
+            )
+
+            content = output_path.read_text()
+            assert stats.success is True
+            assert "FOREIGN_KEY_CHECKS" not in content
+
+    def test_fk_wrapper_disabled_by_option(self, mock_connection):
+        """disable_foreign_key_checks=False suppresses the wrapper on a full dump."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([(1, "Alice")]))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(
+            mock_connection, {"compress": False, "disable_foreign_key_checks": False}
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+            stats = dumper.dump_table(
+                "users", output_path, DumpSettings(), OutputFormat.SQL
+            )
+
+            content = output_path.read_text()
+            assert stats.success is True
+            assert "FOREIGN_KEY_CHECKS" not in content
+
+    def test_csv_dump_never_emits_fk_statements(self, mock_connection):
+        """CSV output carries no SQL FK statements regardless of the option."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([(1, "Alice")]))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(
+            mock_connection, {"compress": False, "disable_foreign_key_checks": True}
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.csv"
+            stats = dumper.dump_table(
+                "users", output_path, DumpSettings(), OutputFormat.CSV
+            )
+
+            content = output_path.read_text()
+            assert stats.success is True
+            assert "FOREIGN_KEY_CHECKS" not in content
+
+    def test_combined_mode_suppresses_per_file_wrapper(self, mock_connection):
+        """emit_fk_wrapper=False (combined mode) suppresses the per-file wrapper."""
+        mock_cursor = mock.MagicMock()
+        mock_cursor.__iter__ = mock.MagicMock(return_value=iter([(1, "Alice")]))
+        mock_connection.get_cursor.return_value = mock_cursor
+
+        dumper = TableDumper(mock_connection, {"compress": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.sql"
+            stats = dumper.dump_table(
+                "users", output_path, DumpSettings(), OutputFormat.SQL,
+                emit_fk_wrapper=False,
+            )
+
+            content = output_path.read_text()
+            assert stats.success is True
+            assert "FOREIGN_KEY_CHECKS" not in content
+
 
 class TestFormatSqlValue:
     """Tests for _format_sql_value method."""

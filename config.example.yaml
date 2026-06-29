@@ -26,6 +26,12 @@ output:
   batch_size: 1000  # Number of rows per INSERT statement (tune for performance)
   # add_drop_table: false  # force-disable DROP TABLE. Default: DROP only on full
   #                        # (unfiltered) dumps; partial dumps never DROP, to keep restores safe.
+  # disable_foreign_key_checks: true  # default true. Wraps FULL SQL dumps in
+  #   SET FOREIGN_KEY_CHECKS=0/1 so restores tolerate any table/insert order and
+  #   circular FKs. Never applied to partial dumps (row_limit/where_clause) or CSV.
+  #   Effective only when the dump is restored in ONE mysql session
+  #   (FOREIGN_KEY_CHECKS is a session variable). Separate-files dumps also get a
+  #   generated restore.sh that disables checks once and sources every *.sql.
 
 # Global defaults (can be overridden per database/table)
 defaults:

@@ -11,7 +11,7 @@ from unittest import mock
 import pytest
 
 from src.database_dumper import DatabaseDumper
-from src.models import DatabaseStats, DumpStats, OutputFormat, TableStats
+from src.models import ColumnInfo, DatabaseStats, DumpStats, OutputFormat, TableStats
 
 
 class TestCompileExclusionPatterns:
@@ -844,6 +844,158 @@ class TestDumpSingleTable:
         assert out.name.startswith("evil")
 
 
+class TestCombinedFkWrapper:
+    """Combined single-file dumps emit exactly one FK-check wrapper pair."""
+
+    @pytest.fixture
+    def mock_config(self):
+        config = mock.MagicMock()
+        config.get_defaults.return_value = {}
+        return config
+
+    def _mock_conn(self, tables):
+        """A connection mock whose cursor yields one row per table dump."""
+        conn = mock.MagicMock()
+        conn.get_tables.return_value = tables
+        conn.get_table_columns.return_value = [
+            ColumnInfo("id", "int(11)", "NO", "PRI", None, ""),
+        ]
+        conn.get_create_table.side_effect = lambda t: f"CREATE TABLE `{t}` (`id` int)"
+
+        def fresh_cursor(*args, **kwargs):
+            cur = mock.MagicMock()
+            cur.__iter__ = mock.MagicMock(return_value=iter([(1,)]))
+            return cur
+
+        conn.get_cursor.side_effect = fresh_cursor
+        return conn
+
+    def test_combined_full_dump_one_wrapper_pair(self, mock_config):
+        """Two-table combined dump: exactly one =0 at top, one =1 at end, none between."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+            "compress": False,
+        }
+        conn = self._mock_conn(["users", "orders"])
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            published = Path(tmpdir) / "testdb_20240101_120000.sql"
+            content = published.read_text()
+
+        assert content.count("SET FOREIGN_KEY_CHECKS=0;") == 1
+        assert content.count("SET FOREIGN_KEY_CHECKS=1;") == 1
+        # =0 before the first CREATE, =1 after the last CREATE, none between tables.
+        assert content.index("SET FOREIGN_KEY_CHECKS=0;") < content.index("CREATE TABLE `users`")
+        assert content.index("CREATE TABLE `orders`") < content.index("SET FOREIGN_KEY_CHECKS=1;")
+        # No stray =1 between the two CREATE statements.
+        between = content[content.index("CREATE TABLE `users`"):content.index("CREATE TABLE `orders`")]
+        assert "FOREIGN_KEY_CHECKS=1" not in between
+
+    def test_combined_with_partial_table_is_unwrapped(self, mock_config):
+        """If any table in a combined dump is partial, the whole file is unwrapped."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+            "compress": False,
+        }
+        conn = self._mock_conn(["users", "orders"])
+        dumper = DatabaseDumper(mock_config)
+        # 'orders' is partial via a per-table row_limit.
+        db_config = {
+            "name": "testdb",
+            "tables": [{"name": "users"}, {"name": "orders", "row_limit": 5}],
+        }
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            published = Path(tmpdir) / "testdb_20240101_120000.sql"
+            content = published.read_text()
+
+        assert "FOREIGN_KEY_CHECKS" not in content
+
+    def test_combined_dump_disabled_by_option(self, mock_config):
+        """disable_foreign_key_checks=False suppresses the combined wrapper."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+            "compress": False,
+            "disable_foreign_key_checks": False,
+        }
+        conn = self._mock_conn(["users", "orders"])
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            published = Path(tmpdir) / "testdb_20240101_120000.sql"
+            content = published.read_text()
+
+        assert "FOREIGN_KEY_CHECKS" not in content
+
+    def test_combined_compressed_dump_is_unwrapped(self, mock_config):
+        """compress=True forces the combined wrapper off to avoid corrupting the gzip stream."""
+        import gzip
+
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+            "compress": True,
+        }
+        conn = self._mock_conn(["users", "orders"])
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            published = Path(tmpdir) / "testdb_20240101_120000.sql.gz"
+            assert published.exists()
+            content = gzip.open(published, "rt", encoding="utf-8").read()
+
+        assert "FOREIGN_KEY_CHECKS" not in content
+
+    def test_combined_empty_table_set_publishes_nothing(self, mock_config):
+        """Empty table set in combined mode must not publish any file (no spurious wrapper-only file)."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+            "compress": False,
+        }
+        conn = self._mock_conn([])
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            published = Path(tmpdir) / "testdb_20240101_120000.sql"
+            partial = Path(tmpdir) / "testdb_20240101_120000.sql.partial"
+            assert not published.exists(), "No file should be published for an empty table set"
+            assert not partial.exists(), "No .partial file should be left for an empty table set"
+
+
 class TestLogTableResult:
     """Tests for _log_table_result method."""
 
@@ -880,3 +1032,195 @@ class TestLogTableResult:
         assert len(dumper.stats.errors) == 1
         assert dumper.stats.errors[0]["database"] == "testdb"
         assert dumper.stats.errors[0]["table"] == "orders"
+
+
+class TestRestoreHelper:
+    """restore.sh generation for separate-files SQL dumps."""
+
+    @pytest.fixture
+    def mock_config(self):
+        config = mock.MagicMock()
+        config.get_defaults.return_value = {}
+        return config
+
+    def _mock_conn(self, tables):
+        conn = mock.MagicMock()
+        conn.get_tables.return_value = tables
+        conn.get_table_columns.return_value = [
+            ColumnInfo("id", "int(11)", "NO", "PRI", None, ""),
+        ]
+        conn.get_create_table.side_effect = lambda t: f"CREATE TABLE `{t}` (`id` int)"
+
+        def fresh_cursor(*args, **kwargs):
+            cur = mock.MagicMock()
+            cur.__iter__ = mock.MagicMock(return_value=iter([(1,)]))
+            return cur
+
+        conn.get_cursor.side_effect = fresh_cursor
+        return conn
+
+    def test_restore_helper_written_for_separate_sql(self, mock_config):
+        """Separate-files SQL dump writes an executable restore.sh that globs *.sql."""
+        import os
+        import stat
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": True,
+            "timestamp_suffix": True,
+            "compress": False,
+        }
+        conn = self._mock_conn(["users", "orders"])
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            helper = Path(tmpdir) / "testdb_20240101_120000" / "restore.sh"
+            assert helper.exists()
+            content = helper.read_text()
+            assert content.count("SET FOREIGN_KEY_CHECKS=0;") == 1
+            assert content.count("SET FOREIGN_KEY_CHECKS=1;") == 1
+            assert "*.sql" in content
+            assert "zcat" not in content
+            # Executable bit set.
+            mode = os.stat(helper).st_mode
+            assert mode & stat.S_IXUSR
+
+    def test_restore_helper_uses_zcat_when_compressed(self, mock_config):
+        """Compressed separate dump produces a helper that globs *.sql.gz via zcat."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": True,
+            "timestamp_suffix": True,
+            "compress": True,
+        }
+        conn = self._mock_conn(["users"])
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            helper = Path(tmpdir) / "testdb_20240101_120000" / "restore.sh"
+            assert helper.exists()
+            content = helper.read_text()
+            assert "*.sql.gz" in content
+            assert "zcat" in content
+
+    def test_no_restore_helper_for_csv(self, mock_config):
+        """CSV separate dump writes no restore.sh."""
+        mock_config.get_output_settings.return_value = {
+            "format": "csv",
+            "separate_files": True,
+            "timestamp_suffix": True,
+            "compress": False,
+        }
+        conn = self._mock_conn(["users"])
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            helper = Path(tmpdir) / "testdb_20240101_120000" / "restore.sh"
+            assert not helper.exists()
+
+    def test_no_restore_helper_for_combined(self, mock_config):
+        """Combined single-file dump writes no restore.sh."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": False,
+            "timestamp_suffix": True,
+            "compress": False,
+        }
+        conn = self._mock_conn(["users"])
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": "*"}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            helper = Path(tmpdir) / "restore.sh"
+            assert not helper.exists()
+            helper2 = Path(tmpdir) / "testdb_20240101_120000" / "restore.sh"
+            assert not helper2.exists()
+
+    def test_no_restore_helper_when_all_partial(self, mock_config):
+        """If every separate table is partial (none wrapped), write no restore.sh."""
+        mock_config.get_output_settings.return_value = {
+            "format": "sql",
+            "separate_files": True,
+            "timestamp_suffix": True,
+            "compress": False,
+        }
+        conn = self._mock_conn(["users"])
+        dumper = DatabaseDumper(mock_config)
+        db_config = {"name": "testdb", "tables": [{"name": "users", "row_limit": 5}]}
+        db_stats = DatabaseStats(name="testdb", instance="primary")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dumper._process_database_tables(
+                conn, db_config, db_stats, Path(tmpdir), "20240101_120000"
+            )
+            helper = Path(tmpdir) / "testdb_20240101_120000" / "restore.sh"
+            assert not helper.exists()
+
+
+class TestFkWrapperHelperBranches:
+    """Unit tests for _table_was_fk_wrapped and _combined_dump_wrappable branches."""
+
+    @pytest.fixture
+    def dumper_fk_disabled(self):
+        """DatabaseDumper with disable_foreign_key_checks=False (feature off)."""
+        config = mock.MagicMock()
+        config.get_output_settings.return_value = {'disable_foreign_key_checks': False}
+        config.get_defaults.return_value = {}
+        return DatabaseDumper(config)
+
+    @pytest.fixture
+    def dumper_fk_enabled(self):
+        """DatabaseDumper with disable_foreign_key_checks=True (feature on)."""
+        config = mock.MagicMock()
+        config.get_output_settings.return_value = {'disable_foreign_key_checks': True}
+        config.get_defaults.return_value = {}
+        return DatabaseDumper(config)
+
+    # --- line 333: _table_was_fk_wrapped returns False when option is off ---
+
+    def test_table_was_fk_wrapped_returns_false_when_option_off(self, dumper_fk_disabled):
+        """Line 333: early return False when disable_foreign_key_checks is False."""
+        stats = TableStats(table='users', success=True)
+        result = dumper_fk_disabled._table_was_fk_wrapped(stats, {'name': 'testdb', 'tables': '*'})
+        assert result is False
+
+    # --- line 399: _combined_dump_wrappable returns False for non-SQL format ---
+
+    def test_combined_dump_wrappable_false_for_csv(self, dumper_fk_enabled):
+        """Line 399: early return False when output_format is not SQL."""
+        result = dumper_fk_enabled._combined_dump_wrappable(
+            [{'name': 'users'}],
+            {'name': 'testdb', 'tables': '*'},
+            OutputFormat.CSV,
+        )
+        assert result is False
+
+    # --- line 405: string table entries are normalised to dicts ---
+
+    def test_combined_dump_wrappable_string_entries_normalised(self, dumper_fk_enabled):
+        """Line 405: string table entries are coerced to {'name': ...} dicts."""
+        result = dumper_fk_enabled._combined_dump_wrappable(
+            ['users', 'orders'],
+            {'name': 'testdb', 'tables': ['users', 'orders']},
+            OutputFormat.SQL,
+        )
+        # Both tables are full dumps (no row_limit/where_clause), so wrappable.
+        assert result is True

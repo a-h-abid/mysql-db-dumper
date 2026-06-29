@@ -307,6 +307,32 @@ output:
   compress: true
 ```
 
+### Foreign key–safe restores
+
+By default (`disable_foreign_key_checks: true`), full SQL dumps are wrapped in:
+
+```sql
+SET FOREIGN_KEY_CHECKS=0;
+-- ... DDL and inserts ...
+SET FOREIGN_KEY_CHECKS=1;
+```
+
+This lets a restore succeed regardless of table-create or row-insert order, and
+handles circular foreign keys. It applies only to **full** SQL dumps — partial
+dumps (`row_limit`/`where_clause`) and CSV output are never wrapped, because
+disabling checks while loading a filtered subset could insert orphan rows.
+
+The wrapper is effective only when the dump is restored in a single `mysql`
+session (`FOREIGN_KEY_CHECKS` is a session variable), e.g. `mysql db < dump.sql`.
+
+In `separate_files` mode each table file is wrapped individually, and the dumper
+also writes a `restore.sh` into the dump directory. It disables FK checks once
+for the whole session and sources every table file in any order:
+
+```sh
+./restore.sh | mysql -u USER -p TARGET_DB
+```
+
 ### Multiple Instances
 
 ```yaml

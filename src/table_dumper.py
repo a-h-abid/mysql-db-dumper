@@ -9,7 +9,7 @@ import math
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Optional, TextIO
 
 from .connection import DatabaseConnection, quote_identifier, validate_where_clause
 from .models import DumpSettings, OrderDirection, OutputFormat, TableStats, coerce_optional_int
@@ -64,6 +64,7 @@ class TableDumper:
         output_format: OutputFormat = OutputFormat.SQL,
         append: bool = False,
         defer_publish: bool = False,
+        emit_fk_wrapper: Optional[bool] = None,
     ) -> TableStats:
         """
         Dump a table to file.
@@ -104,6 +105,23 @@ class TableDumper:
                 )
                 add_drop_table = False
 
+            # FK-check wrapper: only safe for a FULL SQL dump. A partial dump could
+            # insert orphan child rows with checks off; CSV has no SQL semantics.
+            # emit_fk_wrapper=None means "decide here" (separate-files / standalone);
+            # an explicit False means the caller (combined mode) owns the wrapper.
+            if emit_fk_wrapper is None:
+                fk_option = self.output_settings.get('disable_foreign_key_checks', True)
+                emit_fk_wrapper = bool(
+                    fk_option
+                    and full_table
+                    and output_format == OutputFormat.SQL
+                )
+                if fk_option and not full_table:
+                    logging.info(
+                        f"Skipping FOREIGN_KEY_CHECKS wrapper for partial dump of "
+                        f"'{table}' (row_limit/where_clause set)."
+                    )
+
             final_path, write_path, file_handle = self._open_output_file(
                 output_path, append, defer_publish=defer_publish
             )
@@ -112,7 +130,8 @@ class TableDumper:
             try:
                 if output_format == OutputFormat.SQL:
                     stats.rows_dumped = self._dump_as_sql(
-                        file_handle, table, column_names, query, add_drop_table
+                        file_handle, table, column_names, query,
+                        add_drop_table, emit_fk_wrapper,
                     )
                 elif output_format == OutputFormat.CSV:
                     stats.rows_dumped = self._dump_as_csv(
@@ -231,7 +250,8 @@ class TableDumper:
         table: str,
         columns: list[str],
         query: str,
-        add_drop_table: bool = True
+        add_drop_table: bool = True,
+        emit_fk_wrapper: bool = False,
     ) -> int:
         """Dump table data as SQL INSERT statements."""
         # Write header
@@ -239,6 +259,9 @@ class TableDumper:
         file_handle.write(f"-- Table: {table}\n")
         file_handle.write(f"-- Generated: {datetime.now().isoformat()}\n")
         file_handle.write(f"-- -------------------------------------------------\n\n")
+
+        if emit_fk_wrapper:
+            file_handle.write("SET FOREIGN_KEY_CHECKS=0;\n\n")
 
         # Write CREATE TABLE statement. DROP is only safe for a full dump (see dump_table).
         create_statement = self.connection.get_create_table(table)
@@ -270,6 +293,8 @@ class TableDumper:
             cursor.close()
 
         file_handle.write(f"\n-- Dump complete. {rows_dumped} rows.\n")
+        if emit_fk_wrapper:
+            file_handle.write("SET FOREIGN_KEY_CHECKS=1;\n")
         return rows_dumped
 
     def _write_insert_batch(
